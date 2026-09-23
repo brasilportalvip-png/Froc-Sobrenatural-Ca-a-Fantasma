@@ -192,7 +192,7 @@ export const BlindTestModule: React.FC<Props> = ({ activeSession, onLogEvidence 
         {/* Rigor Explanation */}
         <div className="mt-3 p-2.5 rounded bg-[#080d17] border border-cyan-900/60 text-[11px] text-slate-300 font-sans leading-relaxed">
           <p>
-            <strong className="text-cyan-300 font-mono">COMO FUNCIONA O ISOLAMENTO REAL:</strong> Um terceiro participante (o selador) insere uma resposta de controle (ex: uma palavra escrita em um envelope fechado). O sistema gera um hash irreversível SHA-256 e obscurece o dado. <strong className="text-amber-400">A IA e o investigador não podem ler a resposta.</strong> O investigador só pode abrir o selo após travar a hipótese no sistema, registrando honestamente tanto acertos quanto resultados negativos.
+            <strong className="text-cyan-300 font-mono">COMO FUNCIONA O TESTE LOCAL:</strong> Um terceiro registra uma resposta e o aplicativo oculta o texto até a hipótese ser travada. Um hash SHA-256 registra um compromisso, mas a resposta também fica codificada de forma reversível neste aparelho. <strong className="text-amber-400">Quem tem acesso ao armazenamento do navegador pode consultá-la antes da revelação.</strong> Registre acertos e resultados negativos.
           </p>
         </div>
       </div>

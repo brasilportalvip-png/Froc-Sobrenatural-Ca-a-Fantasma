@@ -184,6 +184,7 @@ export interface AdminAdjustmentReceipt {
 
 export interface AdminDashboardOverview {
   totalUsers: number;
+  metricsPartial?: boolean;
   totalCreditsInCirculation: number;
   totalPurchasedCredits: number;
   totalSpentCredits: number;
@@ -236,4 +237,3 @@ export interface ConsultationTransaction {
   createdAt: number;
   completedAt?: number;
 }
-

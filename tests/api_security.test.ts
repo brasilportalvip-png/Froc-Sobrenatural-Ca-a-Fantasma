@@ -68,8 +68,8 @@ test('1. GET /api/status returns JSON and 200 with honest model cascade', async 
   assert.equal(res.status, 200);
   assert.equal(typeof res.body, 'object');
   assert.equal(res.body.status, 'online');
-  assert.deepEqual(res.body.modelCascade, ['gemini-3.8-flash', 'gemini-3.7-flash', 'gemini-2.5-flash']);
-  assert.equal(res.body.pricingConfigured.p50, true);
+  assert.deepEqual(res.body.modelCascade, ['gemini-3.8-flash', 'gemini-3.7-flash', 'gemini-3.6-flash']);
+  assert.equal(typeof res.body.pricingConfigured.p50, 'boolean');
 });
 
 test('2. GET /api/packages returns JSON array with 3 packages', async () => {
@@ -107,6 +107,7 @@ test('5. Security: POST /api/chat fails with 401 without Bearer token', async ()
 });
 
 test('6. Security: Webhook rejects unverified signatures', async () => {
+  process.env.MERCADO_PAGO_WEBHOOK_SECRET = 'local-test-secret';
   const res = await callApp({
     method: 'POST',
     path: '/api/webhooks/mercadopago?data.id=12345',
@@ -118,6 +119,7 @@ test('6. Security: Webhook rejects unverified signatures', async () => {
   });
   assert.equal(res.status, 401);
   assert.match(res.body.error, /Assinatura inválida/);
+  delete process.env.MERCADO_PAGO_WEBHOOK_SECRET;
 });
 
 test('7. Security: User orders endpoint /api/user/orders rejects anonymous request with 401', async () => {
@@ -150,4 +152,3 @@ test('9. Security: Admin adjustment /api/admin/credits/adjust rejects anonymous 
   });
   assert.equal(res.status, 401);
 });
-

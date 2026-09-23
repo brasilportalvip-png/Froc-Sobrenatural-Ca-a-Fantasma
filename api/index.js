@@ -1,7 +1,7 @@
 // src/serverApp.ts
 import express from "express";
 import dotenv from "dotenv";
-import crypto2 from "crypto";
+import crypto3 from "crypto";
 import { GoogleGenAI } from "@google/genai";
 
 // src/services/firebaseAdmin.ts
@@ -201,8 +201,11 @@ async function reserveConsultationCredits(uid, requestId, payloadHash) {
       if (cData.uid !== uid) {
         throw new Error("REQUEST_UID_MISMATCH");
       }
-      if (payloadHash && cData.payloadHash && cData.payloadHash !== payloadHash) {
+      if (!payloadHash || cData.payloadHash !== payloadHash) {
         throw new Error("REQUEST_PAYLOAD_MISMATCH");
+      }
+      if (cData.status !== "completed" || !cData.resultData) {
+        throw new Error("CONSULTATION_IN_PROGRESS");
       }
       const wSnap = await t.get(walletRef);
       const wData = wSnap.data();
@@ -211,7 +214,7 @@ async function reserveConsultationCredits(uid, requestId, payloadHash) {
         consultationId: consultationRef.id,
         balanceAfter: wData?.balance || 0,
         reservedAfter: wData?.reserved || 0,
-        cachedResult: cData.status === "completed" ? cData.resultData : void 0
+        cachedResult: cData.resultData
       };
     }
     const walletSnap = await t.get(walletRef);
@@ -265,13 +268,16 @@ async function commitConsultationCredits(uid, requestId, modelUsed, executionTim
   const ledgerRef = walletRef.collection("ledger").doc();
   await adminDb.runTransaction(async (t) => {
     const consultSnap = await t.get(consultationRef);
-    if (!consultSnap.exists) return;
+    if (!consultSnap.exists) throw new Error("CONSULTATION_NOT_FOUND");
     const cData = consultSnap.data();
+    if (cData.uid !== uid) throw new Error("REQUEST_UID_MISMATCH");
     if (cData.status === "completed") return;
+    if (cData.status !== "reserved") throw new Error("CONSULTATION_NOT_RESERVED");
     const walletSnap = await t.get(walletRef);
-    if (!walletSnap.exists) return;
+    if (!walletSnap.exists) throw new Error("WALLET_NOT_FOUND");
     const wallet = walletSnap.data();
-    const newReserved = Math.max(0, (wallet.reserved || 0) - 5);
+    if (wallet.reserved < 5) throw new Error("INVALID_RESERVED_BALANCE");
+    const newReserved = wallet.reserved - 5;
     const newSpent = (wallet.spentTotal || 0) + 5;
     t.update(walletRef, {
       reserved: newReserved,
@@ -307,14 +313,17 @@ async function releaseConsultationCredits(uid, requestId, errorReason) {
   const ledgerRef = walletRef.collection("ledger").doc();
   await adminDb.runTransaction(async (t) => {
     const consultSnap = await t.get(consultationRef);
-    if (!consultSnap.exists) return;
+    if (!consultSnap.exists) throw new Error("CONSULTATION_NOT_FOUND");
     const cData = consultSnap.data();
-    if (cData.status === "failed_released" || cData.status === "completed") return;
+    if (cData.uid !== uid) throw new Error("REQUEST_UID_MISMATCH");
+    if (cData.status === "completed" || cData.status === "failed_released") return;
+    if (cData.status !== "reserved") throw new Error("CONSULTATION_NOT_RESERVED");
     const walletSnap = await t.get(walletRef);
-    if (!walletSnap.exists) return;
+    if (!walletSnap.exists) throw new Error("WALLET_NOT_FOUND");
     const wallet = walletSnap.data();
+    if (wallet.reserved < 5) throw new Error("INVALID_RESERVED_BALANCE");
     const newBalance = wallet.balance + 5;
-    const newReserved = Math.max(0, (wallet.reserved || 0) - 5);
+    const newReserved = wallet.reserved - 5;
     t.update(walletRef, {
       balance: newBalance,
       reserved: newReserved,
@@ -339,83 +348,9 @@ async function releaseConsultationCredits(uid, requestId, errorReason) {
     t.set(ledgerRef, ledgerEntry);
   });
 }
-async function processChatConsultationAccess(uid) {
-  const todayStr = (/* @__PURE__ */ new Date()).toISOString().slice(0, 10);
-  const quotaRef = adminDb.collection("userChatQuotas").doc(`${uid}_${todayStr}`);
-  const walletRef = adminDb.collection("wallets").doc(uid);
-  const ledgerRef = walletRef.collection("ledger").doc();
-  const FREE_DAILY_QUOTA = 3;
-  return await adminDb.runTransaction(async (t) => {
-    const quotaSnap = await t.get(quotaRef);
-    const walletSnap = await t.get(walletRef);
-    const currentCount = quotaSnap.exists ? quotaSnap.data().count || 0 : 0;
-    if (currentCount < FREE_DAILY_QUOTA) {
-      const nextCount = currentCount + 1;
-      t.set(quotaRef, {
-        uid,
-        date: todayStr,
-        count: nextCount,
-        updatedAt: Date.now()
-      }, { merge: true });
-      return {
-        allowed: true,
-        isFreeTier: true,
-        remainingFreeQuota: FREE_DAILY_QUOTA - nextCount
-      };
-    }
-    if (!walletSnap.exists) {
-      return {
-        allowed: false,
-        isFreeTier: false,
-        remainingFreeQuota: 0,
-        error: "Quota di\xE1ria gratuita excedida (3/3). Adicione cr\xE9ditos para continuar consultando o assistente de IA."
-      };
-    }
-    const wallet = walletSnap.data();
-    if (wallet.balance < 1) {
-      return {
-        allowed: false,
-        isFreeTier: false,
-        remainingFreeQuota: 0,
-        error: "Quota di\xE1ria gratuita esgotada (3/3) e saldo insuficiente. \xC9 necess\xE1rio 1 cr\xE9dito por consulta adicional."
-      };
-    }
-    const newBalance = wallet.balance - 1;
-    const newSpent = (wallet.spentTotal || 0) + 1;
-    t.update(walletRef, {
-      balance: newBalance,
-      spentTotal: newSpent,
-      version: (wallet.version || 1) + 1,
-      updatedAt: Date.now()
-    });
-    const ledgerEntry = {
-      id: ledgerRef.id,
-      uid,
-      type: "consultation_commit",
-      amount: -1,
-      balanceAfter: newBalance,
-      description: "Consulta adicional ao Assistente Metodol\xF3gico de IA (1 cr\xE9dito)",
-      referenceId: `chat_${Date.now()}`,
-      timestamp: Date.now()
-    };
-    t.set(ledgerRef, ledgerEntry);
-    t.set(quotaRef, {
-      uid,
-      date: todayStr,
-      count: currentCount + 1,
-      updatedAt: Date.now()
-    }, { merge: true });
-    return {
-      allowed: true,
-      isFreeTier: false,
-      remainingFreeQuota: 0,
-      balanceAfter: newBalance
-    };
-  });
-}
 async function adminAdjustCredits(params) {
   const { adminUid, targetUid, action, amount, reason, category, idempotencyKey, referenceId } = params;
-  if (!targetUid || typeof targetUid !== "string" || targetUid.trim().length === 0) {
+  if (!targetUid || typeof targetUid !== "string" || !/^[a-zA-Z0-9:_-]{1,128}$/.test(targetUid)) {
     throw new Error("UID de usu\xE1rio alvo inv\xE1lido.");
   }
   if (!amount || typeof amount !== "number" || !Number.isInteger(amount) || amount <= 0) {
@@ -443,7 +378,7 @@ async function adminAdjustCredits(params) {
     const walletSnap = await t.get(walletRef);
     if (idempSnap.exists) {
       const existing = idempSnap.data();
-      const isIdentical = existing.adminUid === adminUid && existing.targetUid === targetUid && existing.action === action && existing.amount === amount && existing.reason.trim() === reason.trim();
+      const isIdentical = existing.adminUid === adminUid && existing.targetUid === targetUid && existing.action === action && existing.amount === amount && existing.reason.trim() === reason.trim() && existing.category === category && (existing.referenceId || null) === (referenceId || null);
       if (!isIdentical) {
         const err = new Error("Conflito de Idempot\xEAncia: chave j\xE1 utilizada com par\xE2metros diferentes.");
         err.statusCode = 409;
@@ -554,6 +489,8 @@ async function adminAdjustCredits(params) {
       action,
       amount,
       reason: reason.trim(),
+      category,
+      referenceId: referenceId || null,
       receipt,
       createdAt: now
     });
@@ -582,7 +519,7 @@ async function adminAdjustCredits(params) {
 // src/services/mercadoPagoEngine.ts
 import crypto from "crypto";
 function verifyMercadoPagoWebhookSignature(xSignatureHeader, xRequestIdHeader, dataId, secretKey) {
-  if (!xSignatureHeader || !secretKey) {
+  if (!xSignatureHeader || !xRequestIdHeader || !dataId || !secretKey) {
     return false;
   }
   const parts = xSignatureHeader.split(",").map((p) => p.trim());
@@ -594,6 +531,10 @@ function verifyMercadoPagoWebhookSignature(xSignatureHeader, xRequestIdHeader, d
     if (k === "v1") v1 = val;
   }
   if (!ts || !v1) {
+    return false;
+  }
+  const timestamp = Number(ts);
+  if (!Number.isSafeInteger(timestamp) || Math.abs(Date.now() - timestamp) > 10 * 6e4) {
     return false;
   }
   let manifest = "";
@@ -659,20 +600,22 @@ async function createMercadoPagoOrder(uid, packageId, userEmail) {
   if (!selectedPackage.active || selectedPackage.priceInCentsBRL <= 0) {
     throw new Error("Este pacote n\xE3o possui pre\xE7o configurado pelo propriet\xE1rio no servidor.");
   }
-  const orderId = `ord_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
+  const orderId = `ord_${crypto.randomUUID()}`;
   const orderRef = adminDb.collection("orders").doc(orderId);
   const accessToken = process.env.MERCADO_PAGO_ACCESS_TOKEN;
-  let initPoint = "";
-  let preferenceId = "";
-  const appUrl = process.env.APP_URL || "https://froc-sobrenatural.web.app";
-  if (accessToken) {
+  const appUrl = process.env.APP_URL;
+  if (!accessToken || !appUrl || !appUrl.startsWith("https://")) {
+    throw new Error("Checkout indispon\xEDvel: token ou APP_URL HTTPS n\xE3o configurado.");
+  }
+  {
     try {
       const unitPriceBRL = selectedPackage.priceInCentsBRL / 100;
       const mpResponse = await fetch("https://api.mercadopago.com/checkout/preferences", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          Authorization: `Bearer ${accessToken}`
+          Authorization: `Bearer ${accessToken}`,
+          "X-Idempotency-Key": orderId
         },
         body: JSON.stringify({
           items: [
@@ -699,37 +642,38 @@ async function createMercadoPagoOrder(uid, packageId, userEmail) {
           notification_url: `${appUrl}/api/webhooks/mercadopago`
         })
       });
-      if (mpResponse.ok) {
-        const mpData = await mpResponse.json();
-        preferenceId = mpData.id;
-        initPoint = mpData.init_point || mpData.sandbox_init_point;
-      } else {
-        const errText = await mpResponse.text();
-        console.error("[MercadoPago] Erro ao criar prefer\xEAncia:", errText);
+      if (!mpResponse.ok) throw new Error("Falha ao criar prefer\xEAncia no Mercado Pago.");
+      const mpData = await mpResponse.json();
+      const preferenceId = String(mpData.id || "");
+      const initPoint = String(mpData.init_point || mpData.sandbox_init_point || "");
+      if (!preferenceId || !/^https:\/\/((www\.)?mercadopago\.com(\.br)?|www\.mercadopago\.com\.br)\//.test(initPoint)) {
+        throw new Error("Resposta de checkout inv\xE1lida.");
       }
+      const order = {
+        id: orderId,
+        uid,
+        packageId: selectedPackage.id,
+        credits: selectedPackage.credits,
+        amountCentsBRL: selectedPackage.priceInCentsBRL,
+        status: "created",
+        mercadoPagoPreferenceId: preferenceId,
+        mercadoPagoInitPoint: initPoint,
+        createdAt: Date.now()
+      };
+      await orderRef.create(order);
+      return order;
     } catch (err) {
-      console.error("[MercadoPago] Falha de conex\xE3o:", err);
+      console.error("[MercadoPago] Prefer\xEAncia n\xE3o dispon\xEDvel:", err);
+      throw new Error("N\xE3o foi poss\xEDvel iniciar o pagamento. Tente novamente.");
     }
   }
-  const order = {
-    id: orderId,
-    uid,
-    packageId: selectedPackage.id,
-    credits: selectedPackage.credits,
-    amountCentsBRL: selectedPackage.priceInCentsBRL,
-    status: "created",
-    mercadoPagoPreferenceId: preferenceId || void 0,
-    mercadoPagoInitPoint: initPoint || void 0,
-    createdAt: Date.now()
-  };
-  await orderRef.set(order);
-  return order;
 }
 async function processMercadoPagoWebhook(paymentId) {
   const accessToken = process.env.MERCADO_PAGO_ACCESS_TOKEN;
   if (!accessToken) {
-    return { success: false, message: "Mercado Pago n\xE3o configurado no servidor." };
+    throw new Error("Mercado Pago n\xE3o configurado no servidor.");
   }
+  if (!/^\d{1,30}$/.test(paymentId)) throw new Error("Identificador de pagamento inv\xE1lido.");
   const paymentResp = await fetch(`https://api.mercadopago.com/v1/payments/${paymentId}`, {
     headers: {
       Authorization: `Bearer ${accessToken}`
@@ -742,7 +686,16 @@ async function processMercadoPagoWebhook(paymentId) {
   const orderId = payment.external_reference;
   const status = payment.status;
   if (!orderId) {
-    return { success: false, message: "external_reference ausente no pagamento" };
+    throw new Error("Refer\xEAncia externa ausente no pagamento.");
+  }
+  if (String(payment.id) !== paymentId) throw new Error("ID do pagamento inconsistente.");
+  const merchantResp = await fetch("https://api.mercadopago.com/users/me", {
+    headers: { Authorization: `Bearer ${accessToken}` }
+  });
+  if (!merchantResp.ok) throw new Error("N\xE3o foi poss\xEDvel verificar a conta recebedora.");
+  const merchant = await merchantResp.json();
+  if (!merchant.id || String(payment.collector_id) !== String(merchant.id)) {
+    throw new Error("Conta recebedora diferente da conta configurada.");
   }
   const orderRef = adminDb.collection("orders").doc(orderId);
   const paymentEventRef = adminDb.collection("paymentEvents").doc(`mp_${paymentId}_${status}`);
@@ -756,6 +709,12 @@ async function processMercadoPagoWebhook(paymentId) {
       throw new Error(`Pedido ${orderId} n\xE3o encontrado no banco`);
     }
     const order = orderSnap.data();
+    if (!order.mercadoPagoPreferenceId || payment.preference_id && String(payment.preference_id) !== order.mercadoPagoPreferenceId || payment.currency_id !== "BRL" || !Number.isFinite(Number(payment.transaction_amount)) || Math.round(Number(payment.transaction_amount) * 100) !== order.amountCentsBRL) {
+      throw new Error("Moeda, valor ou prefer\xEAncia n\xE3o conferem com o pedido.");
+    }
+    if (order.mercadoPagoPaymentId && order.mercadoPagoPaymentId !== paymentId) {
+      throw new Error("Pedido vinculado a outro pagamento.");
+    }
     const uid = order.uid;
     const walletRef = adminDb.collection("wallets").doc(uid);
     const ledgerRef = walletRef.collection("ledger").doc();
@@ -767,7 +726,7 @@ async function processMercadoPagoWebhook(paymentId) {
       receivedAt: Date.now(),
       rawStatus: payment.status_detail
     });
-    if (status === "approved" && order.status !== "approved") {
+    if (status === "approved" && order.status !== "approved" && order.status !== "refunded") {
       const walletExists = walletSnap.exists;
       let wallet;
       if (!walletExists) {
@@ -777,26 +736,32 @@ async function processMercadoPagoWebhook(paymentId) {
           reserved: 0,
           promotionalGranted: 0,
           purchasedTotal: 0,
+          manualGrantedTotal: 0,
           spentTotal: 0,
+          debtAmount: 0,
           version: 1,
           updatedAt: Date.now()
         };
       } else {
         wallet = walletSnap.data();
       }
-      const newBalance = wallet.balance + order.credits;
+      const outstandingDebt = wallet.debtAmount || 0;
+      const appliedToDebt = Math.min(order.credits, outstandingDebt);
+      const newBalance = wallet.balance + order.credits - appliedToDebt;
       const newPurchased = (wallet.purchasedTotal || 0) + order.credits;
       if (!walletExists) {
         t.set(walletRef, {
           ...wallet,
           balance: newBalance,
           purchasedTotal: newPurchased,
+          debtAmount: outstandingDebt - appliedToDebt,
           updatedAt: Date.now()
         });
       } else {
         t.update(walletRef, {
           balance: newBalance,
           purchasedTotal: newPurchased,
+          debtAmount: outstandingDebt - appliedToDebt,
           version: (wallet.version || 1) + 1,
           updatedAt: Date.now()
         });
@@ -810,7 +775,7 @@ async function processMercadoPagoWebhook(paymentId) {
         id: ledgerRef.id,
         uid,
         type: "purchase",
-        amount: order.credits,
+        amount: order.credits - appliedToDebt,
         balanceAfter: newBalance,
         description: `Compra aprovada via Mercado Pago: +${order.credits} cr\xE9ditos`,
         referenceId: orderId,
@@ -819,9 +784,38 @@ async function processMercadoPagoWebhook(paymentId) {
       t.set(ledgerRef, ledgerEntry);
       return { success: true, message: `Cr\xE9ditos (+${order.credits}) aplicados com sucesso!` };
     } else if (status === "refunded" || status === "charged_back") {
-      t.update(orderRef, { status: "refunded" });
-      return { success: true, message: "Estorno registrado." };
+      if (order.status === "refunded") return { success: true, message: "Estorno j\xE1 registrado." };
+      if (order.status !== "approved") {
+        t.update(orderRef, { status: "refunded", mercadoPagoPaymentId: paymentId });
+        return { success: true, message: "Estorno de pagamento n\xE3o creditado registrado." };
+      }
+      const wallet = walletSnap.exists ? walletSnap.data() : null;
+      if (!wallet) throw new Error("Carteira n\xE3o encontrada para concilia\xE7\xE3o.");
+      const removed = Math.min(wallet.balance, order.credits);
+      const newBalance = wallet.balance - removed;
+      t.update(walletRef, {
+        balance: newBalance,
+        debtAmount: (wallet.debtAmount || 0) + order.credits - removed,
+        purchasedTotal: Math.max(0, (wallet.purchasedTotal || 0) - order.credits),
+        version: (wallet.version || 1) + 1,
+        updatedAt: Date.now()
+      });
+      t.update(orderRef, { status: "refunded", refundedAt: Date.now() });
+      t.set(ledgerRef, {
+        id: ledgerRef.id,
+        uid,
+        type: "refund",
+        amount: -removed,
+        balanceAfter: newBalance,
+        referenceId: orderId,
+        description: `Pagamento estornado; ${order.credits - removed} cr\xE9ditos em d\xEDvida`,
+        timestamp: Date.now()
+      });
+      return { success: true, message: "Estorno conciliado na carteira." };
     } else {
+      if (order.status === "approved" || order.status === "refunded") {
+        return { success: true, message: "Estado final preservado." };
+      }
       t.update(orderRef, { status: status === "rejected" ? "declined" : "pending" });
       return { success: true, message: `Status do pedido atualizado para ${status}.` };
     }
@@ -829,23 +823,20 @@ async function processMercadoPagoWebhook(paymentId) {
 }
 
 // src/services/aiOrchestrator.ts
-async function executeGeminiWithFallback(ai2, promptParams, modelCascade = ["gemini-3.8-flash", "gemini-3.7-flash", "gemini-2.5-flash"]) {
+async function executeGeminiWithFallback(ai2, promptParams, modelCascade = ["gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.6-flash"]) {
   const startTime = Date.now();
   const failoverHistory = [];
   for (let i = 0; i < modelCascade.length; i++) {
     const currentModel = modelCascade[i];
     const attemptStart = Date.now();
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 2e3);
     try {
-      const result = await Promise.race([
-        ai2.models.generateContent({
-          model: currentModel,
-          contents: promptParams.contents,
-          config: promptParams.config
-        }),
-        new Promise((_, reject) => {
-          setTimeout(() => reject(new Error(`Timeout de 2s excedido no modelo ${currentModel}`)), 2e3);
-        })
-      ]);
+      const result = await ai2.models.generateContent({
+        model: currentModel,
+        contents: promptParams.contents,
+        config: { ...promptParams.config, abortSignal: controller.signal }
+      });
       const elapsed = Date.now() - attemptStart;
       console.log(`[AI Cascade] Modelo ${currentModel} respondeu com sucesso em ${elapsed}ms`);
       return {
@@ -859,15 +850,32 @@ async function executeGeminiWithFallback(ai2, promptParams, modelCascade = ["gem
       const reason = err?.message || "Falha transit\xF3ria";
       console.warn(`[AI Cascade] Falha ou timeout no modelo ${currentModel} (${elapsed}ms): ${reason}`);
       failoverHistory.push(`${currentModel} (${elapsed}ms: ${reason})`);
-      if (reason.includes("API key not valid") || reason.includes("PERMISSION_DENIED")) {
+      if (/API key not valid|PERMISSION_DENIED|UNAUTHENTICATED|RESOURCE_EXHAUSTED|429/.test(reason)) {
         throw new Error(`Erro permanente de credencial: ${reason}`);
       }
       if (i === modelCascade.length - 1) {
         throw new Error(`Todos os modelos na cascata falharam: ${failoverHistory.join(" -> ")}`);
       }
+    } finally {
+      clearTimeout(timer);
     }
   }
   throw new Error("Falha inesperada no processador de modelos");
+}
+
+// src/services/rateLimit.ts
+import crypto2 from "crypto";
+async function enforceUserRateLimit(uid, operation, maximum, periodMs = 6e4) {
+  const period = Math.floor(Date.now() / periodMs);
+  const uidHash = crypto2.createHash("sha256").update(uid).digest("hex");
+  const ref = adminDb.collection("rateLimits").doc(`${uidHash}_${operation}_${period}`);
+  return adminDb.runTransaction(async (tx) => {
+    const snapshot = await tx.get(ref);
+    const count = snapshot.exists ? Number(snapshot.data().count) || 0 : 0;
+    if (count >= maximum) return false;
+    tx.set(ref, { uid, operation, period, count: count + 1, expiresAt: (period + 2) * periodMs });
+    return true;
+  });
 }
 
 // src/serverApp.ts
@@ -936,7 +944,7 @@ app.get("/api/status", (_req, res) => {
     appName: "Froc Sobrenatural Ca\xE7a Fantasma",
     hasGemini: !!apiKey && !!ai,
     hasMercadoPago: !!process.env.MERCADO_PAGO_ACCESS_TOKEN,
-    modelCascade: ["gemini-3.8-flash", "gemini-3.7-flash", "gemini-2.5-flash"],
+    modelCascade: ["gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.6-flash"],
     pricingConfigured: {
       p50: parseInt(process.env.PACKAGE_50_PRICE_CENTS || "0", 10) > 0,
       p75: parseInt(process.env.PACKAGE_75_PRICE_CENTS || "0", 10) > 0,
@@ -990,6 +998,7 @@ app.post("/api/orders/create", authenticateFirebaseUser, async (req, res) => {
     if (!packageId) {
       return res.status(400).json({ error: "packageId \xE9 obrigat\xF3rio." });
     }
+    if (!await enforceUserRateLimit(uid, "order", 5)) return res.status(429).json({ error: "Aguarde antes de criar outro pedido." });
     const order = await createMercadoPagoOrder(uid, packageId, email);
     res.json(order);
   } catch (err) {
@@ -1002,16 +1011,14 @@ app.post("/api/webhooks/mercadopago", async (req, res) => {
     const xSignature = req.headers["x-signature"];
     const xRequestId = req.headers["x-request-id"];
     const webhookSecret = process.env.MERCADO_PAGO_WEBHOOK_SECRET;
-    if (webhookSecret) {
-      const dataId = (req.query["data.id"] || req.query.id || req.body?.data?.id)?.toString();
-      const isValid = verifyMercadoPagoWebhookSignature(xSignature, xRequestId, dataId, webhookSecret);
-      if (!isValid) {
-        console.warn("[Webhook MP] Rejeitado por assinatura inv\xE1lida ou ausente");
-        return res.status(401).json({ error: "Assinatura inv\xE1lida do webhook" });
-      }
+    if (!webhookSecret) return res.status(503).json({ error: "Webhook n\xE3o configurado." });
+    const dataId = req.query["data.id"]?.toString();
+    if (!verifyMercadoPagoWebhookSignature(xSignature, xRequestId, dataId, webhookSecret)) {
+      console.warn("[Webhook MP] Rejeitado por assinatura inv\xE1lida ou ausente");
+      return res.status(401).json({ error: "Assinatura inv\xE1lida do webhook" });
     }
     const topic = req.query.topic || req.body?.type || req.query.type;
-    const paymentId = req.query["data.id"] || req.query.id || req.body?.data?.id;
+    const paymentId = dataId;
     if ((topic === "payment" || req.body?.action === "payment.created" || req.body?.action === "payment.updated") && paymentId) {
       const result = await processMercadoPagoWebhook(paymentId.toString());
       return res.status(200).json(result);
@@ -1024,7 +1031,10 @@ app.post("/api/webhooks/mercadopago", async (req, res) => {
 });
 app.post("/api/analyze", authenticateFirebaseUser, async (req, res) => {
   const uid = req.user.uid;
-  const requestId = req.headers["x-request-id"]?.toString() || `req_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+  const requestId = req.headers["x-request-id"]?.toString() || crypto3.randomUUID();
+  if (!/^[a-zA-Z0-9_-]{8,100}$/.test(requestId)) {
+    return res.status(400).json({ error: "ID da consulta inv\xE1lido." });
+  }
   const { question, audioBase64, mimeType, sensorContext, audioMetrics } = req.body || {};
   if (!question || typeof question !== "string" || question.trim().length === 0) {
     return res.status(400).json({ error: "Pergunta da consulta \xE9 obrigat\xF3ria." });
@@ -1032,11 +1042,20 @@ app.post("/api/analyze", authenticateFirebaseUser, async (req, res) => {
   if (question.length > 500) {
     return res.status(400).json({ error: "Pergunta excede limite de 500 caracteres." });
   }
+  if (!ai) return res.status(503).json({ error: "An\xE1lise por IA indispon\xEDvel. Nenhum cr\xE9dito foi reservado." });
+  if (audioBase64 !== void 0 && (typeof audioBase64 !== "string" || !/^data:audio\/(webm|ogg|mp4|mpeg|wav)(?:;codecs=[a-z0-9-]+)?;base64,[A-Za-z0-9+/=]+$/i.test(audioBase64))) {
+    return res.status(400).json({ error: "Formato de \xE1udio inv\xE1lido." });
+  }
   const hasAudioData = typeof audioBase64 === "string" && audioBase64.length > 100;
   if (hasAudioData && audioBase64.length > 8 * 1024 * 1024) {
     return res.status(400).json({ error: "\xC1udio excede o limite m\xE1ximo permitido de 8MB." });
   }
-  const payloadHash = crypto2.createHash("sha256").update(question.trim() + (hasAudioData ? audioBase64.slice(0, 500) : "")).digest("hex");
+  try {
+    if (!await enforceUserRateLimit(uid, "analyze", 12)) return res.status(429).json({ error: "Limite tempor\xE1rio de consultas atingido." });
+  } catch {
+    return res.status(503).json({ error: "Controle de uso indispon\xEDvel. Nenhum cr\xE9dito foi reservado." });
+  }
+  const payloadHash = crypto3.createHash("sha256").update(JSON.stringify({ question: question.trim(), audioBase64, mimeType, sensorContext, audioMetrics })).digest("hex");
   let creditReserved = false;
   try {
     const reservation = await reserveConsultationCredits(uid, requestId, payloadHash);
@@ -1136,7 +1155,7 @@ FORMATO JSON OBRIGAT\xD3RIO:
       parts.push({
         inlineData: {
           mimeType: mimeType || "audio/webm",
-          data: audioBase64.replace(/^data:audio\/[a-z0-9-+.]+;base64,/, "")
+          data: audioBase64.replace(/^data:audio\/[a-z0-9-+.]+(?:;codecs=[a-z0-9-]+)?;base64,/i, "")
         }
       });
     }
@@ -1146,20 +1165,11 @@ FORMATO JSON OBRIGAT\xD3RIO:
         contents: parts,
         config: { responseMimeType: "application/json" }
       },
-      ["gemini-3.8-flash", "gemini-3.7-flash", "gemini-2.5-flash"]
+      ["gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.6-flash"]
     );
-    let parsed;
-    try {
-      parsed = JSON.parse(cascadeResult.text || "{}");
-    } catch {
-      parsed = {
-        candidateTranscription: null,
-        voiceDetected: false,
-        confidence: 0.05,
-        conclusion: "Nenhuma resposta identificada.",
-        acousticAnalysis: "N\xE3o foi poss\xEDvel estruturar os dados do sinal ac\xFAstico.",
-        alternativeHypotheses: ["Ru\xEDdo aleat\xF3rio", "Pareidolia"]
-      };
+    const parsed = JSON.parse(cascadeResult.text || "{}");
+    if (!parsed || typeof parsed !== "object" || typeof parsed.conclusion !== "string" || typeof parsed.voiceDetected !== "boolean" || typeof parsed.confidence !== "number" || !Number.isFinite(parsed.confidence) || !Array.isArray(parsed.alternativeHypotheses)) {
+      throw new Error("Resposta de an\xE1lise inv\xE1lida.");
     }
     if (!parsed.voiceDetected || typeof parsed.confidence !== "number" || parsed.confidence < 0.4 || !hasAudioData) {
       parsed.candidateTranscription = null;
@@ -1167,8 +1177,10 @@ FORMATO JSON OBRIGAT\xD3RIO:
         parsed.voiceDetected = false;
       }
     }
-    if (parsed.possibleName) {
+    if (parsed.possibleName && typeof parsed.possibleName === "object") {
       parsed.possibleName.verified = false;
+    } else {
+      parsed.possibleName = null;
     }
     parsed.confidence = Math.max(0, Math.min(1, Number(parsed.confidence) || 0));
     const finalResponse = {
@@ -1184,7 +1196,11 @@ FORMATO JSON OBRIGAT\xD3RIO:
   } catch (err) {
     console.error("Audio analysis error:", err);
     if (creditReserved) {
-      await releaseConsultationCredits(uid, requestId, err.message || "Falha de processamento na IA");
+      try {
+        await releaseConsultationCredits(uid, requestId, "Falha t\xE9cnica");
+      } catch (releaseError) {
+        console.error("[Analyze] Estorno pendente de concilia\xE7\xE3o:", releaseError);
+      }
     }
     return res.status(500).json({
       candidateTranscription: null,
@@ -1193,35 +1209,33 @@ FORMATO JSON OBRIGAT\xD3RIO:
       conclusion: "Falha t\xE9cnica no processamento pericial. Os cr\xE9ditos da consulta foram integralmente liberados.",
       acousticAnalysis: "Erro ao contatar o servi\xE7o de an\xE1lise.",
       alternativeHypotheses: ["Falha de conex\xE3o", "Tempo de resposta excedido"],
-      error: err.message || "Erro interno"
+      error: "Falha t\xE9cnica na an\xE1lise."
     });
   }
 });
 app.post("/api/chat", authenticateFirebaseUser, async (req, res) => {
+  const uid = req.user.uid;
+  const requestId = req.headers["x-request-id"]?.toString() || crypto3.randomUUID();
+  let reserved = false;
   try {
-    const uid = req.user.uid;
     const { messages, sessionContext } = req.body || {};
+    if (!/^[a-zA-Z0-9_-]{8,100}$/.test(requestId)) return res.status(400).json({ error: "ID da consulta inv\xE1lido." });
     if (!Array.isArray(messages) || messages.length === 0) {
       return res.status(400).json({ error: "Hist\xF3rico de mensagens \xE9 obrigat\xF3rio." });
     }
     const recentMessages = messages.slice(-10);
     const lastUserMsg = recentMessages[recentMessages.length - 1];
-    if (!lastUserMsg || typeof lastUserMsg.content !== "string" || lastUserMsg.content.length > 800) {
+    if (!lastUserMsg || lastUserMsg.role !== "user" || typeof lastUserMsg.content !== "string" || lastUserMsg.content.length > 800 || recentMessages.some((msg) => !["user", "assistant"].includes(msg.role) || typeof msg.content !== "string" || msg.content.length > 1e3)) {
       return res.status(400).json({ error: "Mensagem inv\xE1lida ou excede limite de 800 caracteres." });
     }
     if (!ai) {
-      return res.json({
-        reply: "Modo Local Ativo: O assistente Gemini n\xE3o est\xE1 configurado com chave no servidor. A esta\xE7\xE3o mant\xE9m os registros de evid\xEAncia e an\xE1lise espectral em funcionamento local.",
-        provider: "Motor Local"
-      });
+      return res.status(503).json({ error: "Assistente indispon\xEDvel. Nenhum cr\xE9dito foi reservado." });
     }
-    const accessResult = await processChatConsultationAccess(uid);
-    if (!accessResult.allowed) {
-      return res.status(402).json({
-        error: accessResult.error || "Saldo insuficiente para consulta ao chat.",
-        remainingFreeQuota: 0
-      });
-    }
+    if (!await enforceUserRateLimit(uid, "chat", 20)) return res.status(429).json({ error: "Limite tempor\xE1rio do chat atingido." });
+    const payloadHash = crypto3.createHash("sha256").update(JSON.stringify({ messages: recentMessages, sessionContext })).digest("hex");
+    const reservation = await reserveConsultationCredits(uid, requestId, payloadHash);
+    if (reservation.cachedResult) return res.json(reservation.cachedResult);
+    reserved = true;
     const systemInstruction = `
 Voc\xEA \xE9 o assistente t\xE9cnico de metodologia e an\xE1lise da esta\xE7\xE3o "Froc Sobrenatural Ca\xE7a Fantasma".
 Seu papel \xE9 orientar o pesquisador sobre m\xE9todo cient\xEDfico, calibra\xE7\xE3o de sensores, hip\xF3tese nula, descarte de interfer\xEAncias rotineiras e duplo-cego.
@@ -1250,20 +1264,31 @@ ${JSON.stringify(sessionContext).slice(0, 1e3)}` }]
         contents,
         config: { systemInstruction }
       },
-      ["gemini-3.8-flash", "gemini-3.7-flash", "gemini-2.5-flash"]
+      ["gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.6-flash"]
     );
-    res.json({
+    const result = {
       reply: cascadeResult.text || "Nenhuma an\xE1lise gerada.",
       provider: cascadeResult.modelUsed,
-      isFreeTier: accessResult.isFreeTier,
-      remainingFreeQuota: accessResult.remainingFreeQuota,
-      balanceAfter: accessResult.balanceAfter
-    });
+      costCredits: 5
+    };
+    if (!cascadeResult.text) throw new Error("Assistente retornou resposta vazia.");
+    await commitConsultationCredits(uid, requestId, cascadeResult.modelUsed, cascadeResult.executionTimeMs, result);
+    res.json(result);
   } catch (err) {
     console.error("Chat error:", err);
+    if (reserved) {
+      try {
+        await releaseConsultationCredits(uid, requestId, "Falha t\xE9cnica");
+      } catch (releaseError) {
+        console.error("[Chat] Estorno pendente de concilia\xE7\xE3o:", releaseError);
+      }
+    }
+    if (err.message === "INSUFFICIENT_BALANCE") return res.status(402).json({ error: "Saldo insuficiente: chat custa 5 cr\xE9ditos." });
+    if (err.message === "CONSULTATION_IN_PROGRESS") return res.status(409).json({ error: "Consulta em processamento." });
+    if (err.message === "REQUEST_PAYLOAD_MISMATCH" || err.message === "REQUEST_UID_MISMATCH") return res.status(409).json({ error: "ID da consulta pertence a outra solicita\xE7\xE3o." });
     res.status(500).json({
       reply: "Erro ao processar consulta com o assistente.",
-      error: err.message || "Falha de comunica\xE7\xE3o"
+      error: "Falha t\xE9cnica na consulta."
     });
   }
 });
@@ -1325,6 +1350,7 @@ app.get("/api/admin/overview", requireAdmin, async (_req, res) => {
     const envAdminUids = (process.env.ADMIN_UIDS || "").split(",").filter(Boolean);
     res.json({
       totalUsers: walletsSnap.size,
+      metricsPartial: walletsSnap.size === 500 || ordersSnap.size === 500 || consultationsSnap.size === 500,
       totalCreditsInCirculation,
       totalPurchasedCredits,
       totalSpentCredits,
@@ -1347,7 +1373,8 @@ app.get("/api/admin/overview", requireAdmin, async (_req, res) => {
 app.get("/api/admin/users", requireAdmin, async (req, res) => {
   try {
     const search = (req.query.search || "").toLowerCase().trim();
-    const limit = Math.min(parseInt(req.query.limit || "30", 10), 100);
+    const requestedLimit = Number(req.query.limit || 30);
+    const limit = Number.isInteger(requestedLimit) ? Math.max(1, Math.min(requestedLimit, 100)) : 30;
     const walletsSnap = await adminDb.collection("wallets").limit(limit).get();
     const users = [];
     walletsSnap.forEach((doc) => {
@@ -1375,6 +1402,8 @@ app.get("/api/admin/users", requireAdmin, async (req, res) => {
 app.get("/api/admin/users/:uid/wallet", requireAdmin, async (req, res) => {
   try {
     const targetUid = req.params.uid;
+    if (!/^[a-zA-Z0-9:_-]{1,128}$/.test(targetUid)) return res.status(400).json({ error: "UID inv\xE1lido." });
+    await adminAuth.getUser(targetUid);
     const wallet = await getOrCreateWallet(targetUid);
     const ledgerSnap = await adminDb.collection("wallets").doc(targetUid).collection("ledger").orderBy("timestamp", "desc").limit(50).get();
     const ledger = ledgerSnap.docs.map((d) => d.data());
@@ -1399,11 +1428,18 @@ app.post("/api/admin/credits/adjust", requireAdmin, async (req, res) => {
     if (action !== "grant" && action !== "revoke") {
       return res.status(400).json({ error: 'A\xE7\xE3o deve ser "grant" (conceder) ou "revoke" (retirar).' });
     }
+    if (!Number.isSafeInteger(amount) || amount <= 0 || amount > 1e3) {
+      return res.status(400).json({ error: "Quantidade deve ser um inteiro entre 1 e 1000." });
+    }
+    if (typeof targetUid !== "string" || !/^[a-zA-Z0-9:_-]{1,128}$/.test(targetUid)) {
+      return res.status(400).json({ error: "UID inv\xE1lido." });
+    }
+    await adminAuth.getUser(targetUid);
     const result = await adminAdjustCredits({
       adminUid,
       targetUid,
       action,
-      amount: parseInt(amount, 10),
+      amount,
       reason,
       category: category || "support",
       idempotencyKey,
@@ -1439,7 +1475,7 @@ app.get("/api/admin/audit-logs", requireAdmin, async (_req, res) => {
   }
 });
 
-// api/index.ts
+// src/apiEntry.ts
 function handler(req, res) {
   return app(req, res);
 }

@@ -9,7 +9,6 @@ import {
   reserveConsultationCredits,
   commitConsultationCredits,
   releaseConsultationCredits,
-  processChatConsultationAccess,
   adminAdjustCredits,
 } from './services/creditEngine';
 import {
@@ -19,6 +18,7 @@ import {
   verifyMercadoPagoWebhookSignature,
 } from './services/mercadoPagoEngine';
 import { executeGeminiWithFallback } from './services/aiOrchestrator';
+import { enforceUserRateLimit } from './services/rateLimit';
 
 dotenv.config();
 
@@ -110,7 +110,7 @@ app.get('/api/status', (_req: Request, res: Response) => {
     appName: 'Froc Sobrenatural Caça Fantasma',
     hasGemini: !!apiKey && !!ai,
     hasMercadoPago: !!process.env.MERCADO_PAGO_ACCESS_TOKEN,
-    modelCascade: ['gemini-3.8-flash', 'gemini-3.7-flash', 'gemini-2.5-flash'],
+    modelCascade: ['gemini-3.8-flash', 'gemini-3.7-flash', 'gemini-3.6-flash'],
     pricingConfigured: {
       p50: parseInt(process.env.PACKAGE_50_PRICE_CENTS || '0', 10) > 0,
       p75: parseInt(process.env.PACKAGE_75_PRICE_CENTS || '0', 10) > 0,
@@ -183,6 +183,7 @@ app.post('/api/orders/create', authenticateFirebaseUser, async (req: any, res: R
     if (!packageId) {
       return res.status(400).json({ error: 'packageId é obrigatório.' });
     }
+    if (!await enforceUserRateLimit(uid, 'order', 5)) return res.status(429).json({ error: 'Aguarde antes de criar outro pedido.' });
 
     const order = await createMercadoPagoOrder(uid, packageId, email);
     res.json(order);
@@ -199,18 +200,15 @@ app.post('/api/webhooks/mercadopago', async (req: Request, res: Response) => {
     const xRequestId = req.headers['x-request-id'] as string | undefined;
     const webhookSecret = process.env.MERCADO_PAGO_WEBHOOK_SECRET;
 
-    // Se segredo configurado, validar assinatura HMAC sha256 oficial do Mercado Pago
-    if (webhookSecret) {
-      const dataId = (req.query['data.id'] || req.query.id || req.body?.data?.id)?.toString();
-      const isValid = verifyMercadoPagoWebhookSignature(xSignature, xRequestId, dataId, webhookSecret);
-      if (!isValid) {
-        console.warn('[Webhook MP] Rejeitado por assinatura inválida ou ausente');
-        return res.status(401).json({ error: 'Assinatura inválida do webhook' });
-      }
+    if (!webhookSecret) return res.status(503).json({ error: 'Webhook não configurado.' });
+    const dataId = req.query['data.id']?.toString();
+    if (!verifyMercadoPagoWebhookSignature(xSignature, xRequestId, dataId, webhookSecret)) {
+      console.warn('[Webhook MP] Rejeitado por assinatura inválida ou ausente');
+      return res.status(401).json({ error: 'Assinatura inválida do webhook' });
     }
 
     const topic = req.query.topic || req.body?.type || req.query.type;
-    const paymentId = req.query['data.id'] || req.query.id || req.body?.data?.id;
+    const paymentId = dataId;
 
     if ((topic === 'payment' || req.body?.action === 'payment.created' || req.body?.action === 'payment.updated') && paymentId) {
       const result = await processMercadoPagoWebhook(paymentId.toString());
@@ -227,7 +225,10 @@ app.post('/api/webhooks/mercadopago', async (req: Request, res: Response) => {
 // 7. Audio & Signal Analysis endpoint (AUTENTICAÇÃO OBRIGATÓRIA, reserva atômica de 5 créditos e validação de schema)
 app.post('/api/analyze', authenticateFirebaseUser, async (req: any, res: Response) => {
   const uid = req.user.uid;
-  const requestId = req.headers['x-request-id']?.toString() || `req_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+  const requestId = req.headers['x-request-id']?.toString() || crypto.randomUUID();
+  if (!/^[a-zA-Z0-9_-]{8,100}$/.test(requestId)) {
+    return res.status(400).json({ error: 'ID da consulta inválido.' });
+  }
 
   const { question, audioBase64, mimeType, sensorContext, audioMetrics } = req.body || {};
 
@@ -238,15 +239,25 @@ app.post('/api/analyze', authenticateFirebaseUser, async (req: any, res: Respons
   if (question.length > 500) {
     return res.status(400).json({ error: 'Pergunta excede limite de 500 caracteres.' });
   }
+  if (!ai) return res.status(503).json({ error: 'Análise por IA indisponível. Nenhum crédito foi reservado.' });
 
   // Validação de áudio se fornecido
+  if (audioBase64 !== undefined && (typeof audioBase64 !== 'string' || !/^data:audio\/(webm|ogg|mp4|mpeg|wav)(?:;codecs=[a-z0-9-]+)?;base64,[A-Za-z0-9+/=]+$/i.test(audioBase64))) {
+    return res.status(400).json({ error: 'Formato de áudio inválido.' });
+  }
   const hasAudioData = typeof audioBase64 === 'string' && audioBase64.length > 100;
   if (hasAudioData && audioBase64.length > 8 * 1024 * 1024) {
     return res.status(400).json({ error: 'Áudio excede o limite máximo permitido de 8MB.' });
   }
 
+  try {
+    if (!await enforceUserRateLimit(uid, 'analyze', 12)) return res.status(429).json({ error: 'Limite temporário de consultas atingido.' });
+  } catch {
+    return res.status(503).json({ error: 'Controle de uso indisponível. Nenhum crédito foi reservado.' });
+  }
+
   // Hash da requisição para idempotência estrita
-  const payloadHash = crypto.createHash('sha256').update(question.trim() + (hasAudioData ? audioBase64.slice(0, 500) : '')).digest('hex');
+  const payloadHash = crypto.createHash('sha256').update(JSON.stringify({ question: question.trim(), audioBase64, mimeType, sensorContext, audioMetrics })).digest('hex');
 
   let creditReserved = false;
   try {
@@ -364,7 +375,7 @@ FORMATO JSON OBRIGATÓRIO:
       parts.push({
         inlineData: {
           mimeType: mimeType || 'audio/webm',
-          data: audioBase64.replace(/^data:audio\/[a-z0-9-+.]+;base64,/, ''),
+          data: audioBase64.replace(/^data:audio\/[a-z0-9-+.]+(?:;codecs=[a-z0-9-]+)?;base64,/i, ''),
         },
       });
     }
@@ -375,21 +386,14 @@ FORMATO JSON OBRIGATÓRIO:
         contents: parts,
         config: { responseMimeType: 'application/json' },
       },
-      ['gemini-3.8-flash', 'gemini-3.7-flash', 'gemini-2.5-flash']
+      ['gemini-3.8-flash', 'gemini-3.7-flash', 'gemini-3.6-flash']
     );
 
-    let parsed: any;
-    try {
-      parsed = JSON.parse(cascadeResult.text || '{}');
-    } catch {
-      parsed = {
-        candidateTranscription: null,
-        voiceDetected: false,
-        confidence: 0.05,
-        conclusion: 'Nenhuma resposta identificada.',
-        acousticAnalysis: 'Não foi possível estruturar os dados do sinal acústico.',
-        alternativeHypotheses: ['Ruído aleatório', 'Pareidolia'],
-      };
+    const parsed: any = JSON.parse(cascadeResult.text || '{}');
+    if (!parsed || typeof parsed !== 'object' || typeof parsed.conclusion !== 'string' ||
+        typeof parsed.voiceDetected !== 'boolean' || typeof parsed.confidence !== 'number' ||
+        !Number.isFinite(parsed.confidence) || !Array.isArray(parsed.alternativeHypotheses)) {
+      throw new Error('Resposta de análise inválida.');
     }
 
     // Normalização e validação de schema rigorosa
@@ -399,8 +403,10 @@ FORMATO JSON OBRIGATÓRIO:
         parsed.voiceDetected = false;
       }
     }
-    if (parsed.possibleName) {
+    if (parsed.possibleName && typeof parsed.possibleName === 'object') {
       parsed.possibleName.verified = false;
+    } else {
+      parsed.possibleName = null;
     }
     parsed.confidence = Math.max(0, Math.min(1, Number(parsed.confidence) || 0));
 
@@ -422,7 +428,8 @@ FORMATO JSON OBRIGATÓRIO:
 
     // Se houve reserva de créditos e o processamento falhou, estornar/liberar imediatamente os 5 créditos
     if (creditReserved) {
-      await releaseConsultationCredits(uid, requestId, err.message || 'Falha de processamento na IA');
+      try { await releaseConsultationCredits(uid, requestId, 'Falha técnica'); }
+      catch (releaseError) { console.error('[Analyze] Estorno pendente de conciliação:', releaseError); }
     }
 
     return res.status(500).json({
@@ -432,16 +439,19 @@ FORMATO JSON OBRIGATÓRIO:
       conclusion: 'Falha técnica no processamento pericial. Os créditos da consulta foram integralmente liberados.',
       acousticAnalysis: 'Erro ao contatar o serviço de análise.',
       alternativeHypotheses: ['Falha de conexão', 'Tempo de resposta excedido'],
-      error: err.message || 'Erro interno',
+      error: 'Falha técnica na análise.',
     });
   }
 });
 
 // 8. Multi-turn Session Investigation Chat endpoint (AUTENTICAÇÃO OBRIGATÓRIA & QUOTA/COBRANÇA)
 app.post('/api/chat', authenticateFirebaseUser, async (req: any, res: Response) => {
+  const uid = req.user.uid;
+  const requestId = req.headers['x-request-id']?.toString() || crypto.randomUUID();
+  let reserved = false;
   try {
-    const uid = req.user.uid;
     const { messages, sessionContext } = req.body || {};
+    if (!/^[a-zA-Z0-9_-]{8,100}$/.test(requestId)) return res.status(400).json({ error: 'ID da consulta inválido.' });
 
     if (!Array.isArray(messages) || messages.length === 0) {
       return res.status(400).json({ error: 'Histórico de mensagens é obrigatório.' });
@@ -450,25 +460,21 @@ app.post('/api/chat', authenticateFirebaseUser, async (req: any, res: Response) 
     // Limite de mensagens para prevenir abuso de tokens
     const recentMessages = messages.slice(-10);
     const lastUserMsg = recentMessages[recentMessages.length - 1];
-    if (!lastUserMsg || typeof lastUserMsg.content !== 'string' || lastUserMsg.content.length > 800) {
+    if (!lastUserMsg || lastUserMsg.role !== 'user' || typeof lastUserMsg.content !== 'string' || lastUserMsg.content.length > 800 ||
+        recentMessages.some((msg: any) => !['user', 'assistant'].includes(msg.role) || typeof msg.content !== 'string' || msg.content.length > 1000)) {
       return res.status(400).json({ error: 'Mensagem inválida ou excede limite de 800 caracteres.' });
     }
 
     if (!ai) {
-      return res.json({
-        reply: 'Modo Local Ativo: O assistente Gemini não está configurado com chave no servidor. A estação mantém os registros de evidência e análise espectral em funcionamento local.',
-        provider: 'Motor Local',
-      });
+      return res.status(503).json({ error: 'Assistente indisponível. Nenhum crédito foi reservado.' });
     }
 
-    // Controle de Acesso e Quota/Cobrança do Chat
-    const accessResult = await processChatConsultationAccess(uid);
-    if (!accessResult.allowed) {
-      return res.status(402).json({
-        error: accessResult.error || 'Saldo insuficiente para consulta ao chat.',
-        remainingFreeQuota: 0,
-      });
-    }
+    if (!await enforceUserRateLimit(uid, 'chat', 20)) return res.status(429).json({ error: 'Limite temporário do chat atingido.' });
+
+    const payloadHash = crypto.createHash('sha256').update(JSON.stringify({ messages: recentMessages, sessionContext })).digest('hex');
+    const reservation = await reserveConsultationCredits(uid, requestId, payloadHash);
+    if (reservation.cachedResult) return res.json(reservation.cachedResult);
+    reserved = true;
 
     const systemInstruction = `
 Você é o assistente técnico de metodologia e análise da estação "Froc Sobrenatural Caça Fantasma".
@@ -500,21 +506,29 @@ REGRAS:
         contents,
         config: { systemInstruction },
       },
-      ['gemini-3.8-flash', 'gemini-3.7-flash', 'gemini-2.5-flash']
+      ['gemini-3.8-flash', 'gemini-3.7-flash', 'gemini-3.6-flash']
     );
 
-    res.json({
+    const result = {
       reply: cascadeResult.text || 'Nenhuma análise gerada.',
       provider: cascadeResult.modelUsed,
-      isFreeTier: accessResult.isFreeTier,
-      remainingFreeQuota: accessResult.remainingFreeQuota,
-      balanceAfter: accessResult.balanceAfter,
-    });
+      costCredits: 5,
+    };
+    if (!cascadeResult.text) throw new Error('Assistente retornou resposta vazia.');
+    await commitConsultationCredits(uid, requestId, cascadeResult.modelUsed, cascadeResult.executionTimeMs, result);
+    res.json(result);
   } catch (err: any) {
     console.error('Chat error:', err);
+    if (reserved) {
+      try { await releaseConsultationCredits(uid, requestId, 'Falha técnica'); }
+      catch (releaseError) { console.error('[Chat] Estorno pendente de conciliação:', releaseError); }
+    }
+    if (err.message === 'INSUFFICIENT_BALANCE') return res.status(402).json({ error: 'Saldo insuficiente: chat custa 5 créditos.' });
+    if (err.message === 'CONSULTATION_IN_PROGRESS') return res.status(409).json({ error: 'Consulta em processamento.' });
+    if (err.message === 'REQUEST_PAYLOAD_MISMATCH' || err.message === 'REQUEST_UID_MISMATCH') return res.status(409).json({ error: 'ID da consulta pertence a outra solicitação.' });
     res.status(500).json({
       reply: 'Erro ao processar consulta com o assistente.',
-      error: err.message || 'Falha de comunicação',
+      error: 'Falha técnica na consulta.',
     });
   }
 });
@@ -608,6 +622,7 @@ app.get('/api/admin/overview', requireAdmin, async (_req: any, res: Response) =>
 
     res.json({
       totalUsers: walletsSnap.size,
+      metricsPartial: walletsSnap.size === 500 || ordersSnap.size === 500 || consultationsSnap.size === 500,
       totalCreditsInCirculation,
       totalPurchasedCredits,
       totalSpentCredits,
@@ -632,7 +647,8 @@ app.get('/api/admin/overview', requireAdmin, async (_req: any, res: Response) =>
 app.get('/api/admin/users', requireAdmin, async (req: any, res: Response) => {
   try {
     const search = (req.query.search as string || '').toLowerCase().trim();
-    const limit = Math.min(parseInt(req.query.limit as string || '30', 10), 100);
+    const requestedLimit = Number(req.query.limit || 30);
+    const limit = Number.isInteger(requestedLimit) ? Math.max(1, Math.min(requestedLimit, 100)) : 30;
 
     const walletsSnap = await adminDb.collection('wallets').limit(limit).get();
     const users: any[] = [];
@@ -665,6 +681,8 @@ app.get('/api/admin/users', requireAdmin, async (req: any, res: Response) => {
 app.get('/api/admin/users/:uid/wallet', requireAdmin, async (req: any, res: Response) => {
   try {
     const targetUid = req.params.uid;
+    if (!/^[a-zA-Z0-9:_-]{1,128}$/.test(targetUid)) return res.status(400).json({ error: 'UID inválido.' });
+    await adminAuth.getUser(targetUid);
     const wallet = await getOrCreateWallet(targetUid);
 
     const ledgerSnap = await adminDb
@@ -703,11 +721,19 @@ app.post('/api/admin/credits/adjust', requireAdmin, async (req: any, res: Respon
       return res.status(400).json({ error: 'Ação deve ser "grant" (conceder) ou "revoke" (retirar).' });
     }
 
+    if (!Number.isSafeInteger(amount) || amount <= 0 || amount > 1000) {
+      return res.status(400).json({ error: 'Quantidade deve ser um inteiro entre 1 e 1000.' });
+    }
+    if (typeof targetUid !== 'string' || !/^[a-zA-Z0-9:_-]{1,128}$/.test(targetUid)) {
+      return res.status(400).json({ error: 'UID inválido.' });
+    }
+    await adminAuth.getUser(targetUid);
+
     const result = await adminAdjustCredits({
       adminUid,
       targetUid,
       action,
-      amount: parseInt(amount, 10),
+      amount,
       reason,
       category: category || 'support',
       idempotencyKey,
@@ -757,4 +783,3 @@ app.get('/api/admin/audit-logs', requireAdmin, async (_req: any, res: Response) 
     res.status(500).json({ error: 'Erro ao buscar logs de auditoria.' });
   }
 });
-

@@ -63,8 +63,9 @@ export const CommunicationModule: React.FC<Props> = ({
   onRequestMicPermission,
   hasGemini,
 }) => {
-  const { user, wallet, getIdToken } = useAuth();
+  const { user, wallet, getIdToken, refreshWallet } = useAuth();
   const [questionText, setQuestionText] = useState('');
+  const [questionError, setQuestionError] = useState('');
   const [isProcessing, setIsProcessing] = useState(false);
   const [isListeningSpeech, setIsListeningSpeech] = useState(false);
   const [speechSupported, setSpeechSupported] = useState(false);
@@ -141,10 +142,18 @@ export const CommunicationModule: React.FC<Props> = ({
 
     const q = questionText.trim();
     setQuestionText('');
+    setQuestionError('');
     setIsProcessing(true);
 
     try {
-      await onAddQuestionEvidence(q);
+      const result = await onAddQuestionEvidence(q);
+      if (!result) {
+        setQuestionText(q);
+        setQuestionError('Consulta não concluída. Verifique a conexão, o saldo ou a disponibilidade da IA; sua pergunta foi mantida.');
+      }
+    } catch {
+      setQuestionText(q);
+      setQuestionError('Falha ao enviar consulta. Sua pergunta foi mantida.');
     } finally {
       setIsProcessing(false);
     }
@@ -210,9 +219,7 @@ export const CommunicationModule: React.FC<Props> = ({
       ]);
 
       // Se consumiu créditos pagos, atualizar a carteira
-      if (data.isFreeTier === false) {
-        refreshWallet();
-      }
+      await refreshWallet();
     } catch {
       setAssistantMessages((prev) => [
         ...prev,
@@ -556,6 +563,8 @@ export const CommunicationModule: React.FC<Props> = ({
             )}
           </button>
         </form>
+
+        {questionError && <p role="alert" className="mt-2 text-xs text-rose-300">{questionError}</p>}
 
         {user && wallet && wallet.balance < 5 && (
           <div className="mt-2 p-2 rounded bg-rose-950/60 border border-rose-600/50 flex justify-between items-center text-[11px] font-mono text-rose-200">

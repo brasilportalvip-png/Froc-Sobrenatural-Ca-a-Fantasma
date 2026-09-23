@@ -13,7 +13,7 @@ export async function executeGeminiWithFallback(
     contents: any[];
     config?: any;
   },
-  modelCascade: string[] = ['gemini-3.8-flash', 'gemini-3.7-flash', 'gemini-2.5-flash']
+  modelCascade: string[] = ['gemini-3.8-flash', 'gemini-3.7-flash', 'gemini-3.6-flash']
 ): Promise<FallbackResult> {
   const startTime = Date.now();
   const failoverHistory: string[] = [];
@@ -22,18 +22,14 @@ export async function executeGeminiWithFallback(
     const currentModel = modelCascade[i];
     const attemptStart = Date.now();
 
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 2000);
     try {
-      // 2000ms (2s) failover timeout trigger per specification
-      const result = await Promise.race([
-        ai.models.generateContent({
+      const result = await ai.models.generateContent({
           model: currentModel,
           contents: promptParams.contents,
-          config: promptParams.config,
-        }),
-        new Promise<never>((_, reject) => {
-          setTimeout(() => reject(new Error(`Timeout de 2s excedido no modelo ${currentModel}`)), 2000);
-        }),
-      ]);
+          config: { ...promptParams.config, abortSignal: controller.signal },
+        });
 
       const elapsed = Date.now() - attemptStart;
       console.log(`[AI Cascade] Modelo ${currentModel} respondeu com sucesso em ${elapsed}ms`);
@@ -50,8 +46,8 @@ export async function executeGeminiWithFallback(
       console.warn(`[AI Cascade] Falha ou timeout no modelo ${currentModel} (${elapsed}ms): ${reason}`);
       failoverHistory.push(`${currentModel} (${elapsed}ms: ${reason})`);
 
-      // If it's an unrecoverable credential error, don't cascade blindly
-      if (reason.includes('API key not valid') || reason.includes('PERMISSION_DENIED')) {
+      // Invalid credentials, quota and permission failures affect the whole cascade.
+      if (/API key not valid|PERMISSION_DENIED|UNAUTHENTICATED|RESOURCE_EXHAUSTED|429/.test(reason)) {
         throw new Error(`Erro permanente de credencial: ${reason}`);
       }
       // If we reached the end of the cascade, throw the error
@@ -59,6 +55,8 @@ export async function executeGeminiWithFallback(
         throw new Error(`Todos os modelos na cascata falharam: ${failoverHistory.join(' -> ')}`);
       }
       // Otherwise continue to next model in cascade
+    } finally {
+      clearTimeout(timer);
     }
   }
 

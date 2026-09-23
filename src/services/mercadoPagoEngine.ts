@@ -12,7 +12,7 @@ export function verifyMercadoPagoWebhookSignature(
   dataId: string | undefined,
   secretKey: string
 ): boolean {
-  if (!xSignatureHeader || !secretKey) {
+  if (!xSignatureHeader || !xRequestIdHeader || !dataId || !secretKey) {
     return false;
   }
 
@@ -28,6 +28,11 @@ export function verifyMercadoPagoWebhookSignature(
   }
 
   if (!ts || !v1) {
+    return false;
+  }
+  const timestamp = Number(ts);
+  // The signature timestamp is milliseconds. Reject replayed notifications.
+  if (!Number.isSafeInteger(timestamp) || Math.abs(Date.now() - timestamp) > 10 * 60_000) {
     return false;
   }
 
@@ -113,16 +118,16 @@ export async function createMercadoPagoOrder(uid: string, packageId: string, use
     throw new Error('Este pacote não possui preço configurado pelo proprietário no servidor.');
   }
 
-  const orderId = `ord_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
+  const orderId = `ord_${crypto.randomUUID()}`;
   const orderRef = adminDb.collection('orders').doc(orderId);
 
   const accessToken = process.env.MERCADO_PAGO_ACCESS_TOKEN;
-  let initPoint = '';
-  let preferenceId = '';
+  const appUrl = process.env.APP_URL;
+  if (!accessToken || !appUrl || !appUrl.startsWith('https://')) {
+    throw new Error('Checkout indisponível: token ou APP_URL HTTPS não configurado.');
+  }
 
-  const appUrl = process.env.APP_URL || 'https://froc-sobrenatural.web.app';
-
-  if (accessToken) {
+  {
     // Chamada oficial da API de Preferências do Mercado Pago (Checkout Pro)
     try {
       const unitPriceBRL = selectedPackage.priceInCentsBRL / 100;
@@ -131,6 +136,7 @@ export async function createMercadoPagoOrder(uid: string, packageId: string, use
         headers: {
           'Content-Type': 'application/json',
           Authorization: `Bearer ${accessToken}`,
+          'X-Idempotency-Key': orderId,
         },
         body: JSON.stringify({
           items: [
@@ -158,33 +164,26 @@ export async function createMercadoPagoOrder(uid: string, packageId: string, use
         }),
       });
 
-      if (mpResponse.ok) {
-        const mpData = await mpResponse.json();
-        preferenceId = mpData.id;
-        initPoint = mpData.init_point || mpData.sandbox_init_point;
-      } else {
-        const errText = await mpResponse.text();
-        console.error('[MercadoPago] Erro ao criar preferência:', errText);
+      if (!mpResponse.ok) throw new Error('Falha ao criar preferência no Mercado Pago.');
+      const mpData = await mpResponse.json();
+      const preferenceId = String(mpData.id || '');
+      const initPoint = String(mpData.init_point || mpData.sandbox_init_point || '');
+      if (!preferenceId || !/^https:\/\/((www\.)?mercadopago\.com(\.br)?|www\.mercadopago\.com\.br)\//.test(initPoint)) {
+        throw new Error('Resposta de checkout inválida.');
       }
+      const order: OrderItem = {
+        id: orderId, uid, packageId: selectedPackage.id,
+        credits: selectedPackage.credits, amountCentsBRL: selectedPackage.priceInCentsBRL,
+        status: 'created', mercadoPagoPreferenceId: preferenceId,
+        mercadoPagoInitPoint: initPoint, createdAt: Date.now(),
+      };
+      await orderRef.create(order);
+      return order;
     } catch (err) {
-      console.error('[MercadoPago] Falha de conexão:', err);
+      console.error('[MercadoPago] Preferência não disponível:', err);
+      throw new Error('Não foi possível iniciar o pagamento. Tente novamente.');
     }
   }
-
-  const order: OrderItem = {
-    id: orderId,
-    uid,
-    packageId: selectedPackage.id,
-    credits: selectedPackage.credits,
-    amountCentsBRL: selectedPackage.priceInCentsBRL,
-    status: 'created',
-    mercadoPagoPreferenceId: preferenceId || undefined,
-    mercadoPagoInitPoint: initPoint || undefined,
-    createdAt: Date.now(),
-  };
-
-  await orderRef.set(order);
-  return order;
 }
 
 /**
@@ -193,8 +192,9 @@ export async function createMercadoPagoOrder(uid: string, packageId: string, use
 export async function processMercadoPagoWebhook(paymentId: string): Promise<{ success: boolean; message: string }> {
   const accessToken = process.env.MERCADO_PAGO_ACCESS_TOKEN;
   if (!accessToken) {
-    return { success: false, message: 'Mercado Pago não configurado no servidor.' };
+    throw new Error('Mercado Pago não configurado no servidor.');
   }
+  if (!/^\d{1,30}$/.test(paymentId)) throw new Error('Identificador de pagamento inválido.');
 
   // Consulta autoritativa à API do Mercado Pago
   const paymentResp = await fetch(`https://api.mercadopago.com/v1/payments/${paymentId}`, {
@@ -212,7 +212,18 @@ export async function processMercadoPagoWebhook(paymentId: string): Promise<{ su
   const status = payment.status; // 'approved', 'rejected', 'cancelled', 'refunded', etc.
 
   if (!orderId) {
-    return { success: false, message: 'external_reference ausente no pagamento' };
+    throw new Error('Referência externa ausente no pagamento.');
+  }
+  if (String(payment.id) !== paymentId) throw new Error('ID do pagamento inconsistente.');
+
+  // Confirm the merchant identity independently of the incoming webhook.
+  const merchantResp = await fetch('https://api.mercadopago.com/users/me', {
+    headers: { Authorization: `Bearer ${accessToken}` },
+  });
+  if (!merchantResp.ok) throw new Error('Não foi possível verificar a conta recebedora.');
+  const merchant = await merchantResp.json();
+  if (!merchant.id || String(payment.collector_id) !== String(merchant.id)) {
+    throw new Error('Conta recebedora diferente da conta configurada.');
   }
 
   const orderRef = adminDb.collection('orders').doc(orderId);
@@ -231,6 +242,16 @@ export async function processMercadoPagoWebhook(paymentId: string): Promise<{ su
     }
 
     const order = orderSnap.data() as OrderItem;
+    if (!order.mercadoPagoPreferenceId ||
+        (payment.preference_id && String(payment.preference_id) !== order.mercadoPagoPreferenceId) ||
+        payment.currency_id !== 'BRL' ||
+        !Number.isFinite(Number(payment.transaction_amount)) ||
+        Math.round(Number(payment.transaction_amount) * 100) !== order.amountCentsBRL) {
+      throw new Error('Moeda, valor ou preferência não conferem com o pedido.');
+    }
+    if (order.mercadoPagoPaymentId && order.mercadoPagoPaymentId !== paymentId) {
+      throw new Error('Pedido vinculado a outro pagamento.');
+    }
     const uid = order.uid;
     const walletRef = adminDb.collection('wallets').doc(uid);
     const ledgerRef = walletRef.collection('ledger').doc();
@@ -246,7 +267,7 @@ export async function processMercadoPagoWebhook(paymentId: string): Promise<{ su
       rawStatus: payment.status_detail,
     });
 
-    if (status === 'approved' && order.status !== 'approved') {
+    if (status === 'approved' && order.status !== 'approved' && order.status !== 'refunded') {
       const walletExists = walletSnap.exists;
       let wallet: UserWallet;
       if (!walletExists) {
@@ -256,7 +277,9 @@ export async function processMercadoPagoWebhook(paymentId: string): Promise<{ su
           reserved: 0,
           promotionalGranted: 0,
           purchasedTotal: 0,
+          manualGrantedTotal: 0,
           spentTotal: 0,
+          debtAmount: 0,
           version: 1,
           updatedAt: Date.now(),
         };
@@ -264,7 +287,10 @@ export async function processMercadoPagoWebhook(paymentId: string): Promise<{ su
         wallet = walletSnap.data() as UserWallet;
       }
 
-      const newBalance = wallet.balance + order.credits;
+      // Prior manual adjustments or chargebacks may have produced a debt.
+      const outstandingDebt = wallet.debtAmount || 0;
+      const appliedToDebt = Math.min(order.credits, outstandingDebt);
+      const newBalance = wallet.balance + order.credits - appliedToDebt;
       const newPurchased = (wallet.purchasedTotal || 0) + order.credits;
 
       if (!walletExists) {
@@ -272,12 +298,14 @@ export async function processMercadoPagoWebhook(paymentId: string): Promise<{ su
           ...wallet,
           balance: newBalance,
           purchasedTotal: newPurchased,
+          debtAmount: outstandingDebt - appliedToDebt,
           updatedAt: Date.now(),
         });
       } else {
         t.update(walletRef, {
           balance: newBalance,
           purchasedTotal: newPurchased,
+          debtAmount: outstandingDebt - appliedToDebt,
           version: (wallet.version || 1) + 1,
           updatedAt: Date.now(),
         });
@@ -293,7 +321,7 @@ export async function processMercadoPagoWebhook(paymentId: string): Promise<{ su
         id: ledgerRef.id,
         uid,
         type: 'purchase',
-        amount: order.credits,
+        amount: order.credits - appliedToDebt,
         balanceAfter: newBalance,
         description: `Compra aprovada via Mercado Pago: +${order.credits} créditos`,
         referenceId: orderId,
@@ -303,9 +331,33 @@ export async function processMercadoPagoWebhook(paymentId: string): Promise<{ su
 
       return { success: true, message: `Créditos (+${order.credits}) aplicados com sucesso!` };
     } else if (status === 'refunded' || status === 'charged_back') {
-      t.update(orderRef, { status: 'refunded' });
-      return { success: true, message: 'Estorno registrado.' };
+      if (order.status === 'refunded') return { success: true, message: 'Estorno já registrado.' };
+      if (order.status !== 'approved') {
+        t.update(orderRef, { status: 'refunded', mercadoPagoPaymentId: paymentId });
+        return { success: true, message: 'Estorno de pagamento não creditado registrado.' };
+      }
+      const wallet = walletSnap.exists ? walletSnap.data() as UserWallet : null;
+      if (!wallet) throw new Error('Carteira não encontrada para conciliação.');
+      const removed = Math.min(wallet.balance, order.credits);
+      const newBalance = wallet.balance - removed;
+      t.update(walletRef, {
+        balance: newBalance,
+        debtAmount: (wallet.debtAmount || 0) + order.credits - removed,
+        purchasedTotal: Math.max(0, (wallet.purchasedTotal || 0) - order.credits),
+        version: (wallet.version || 1) + 1,
+        updatedAt: Date.now(),
+      });
+      t.update(orderRef, { status: 'refunded', refundedAt: Date.now() });
+      t.set(ledgerRef, {
+        id: ledgerRef.id, uid, type: 'refund', amount: -removed,
+        balanceAfter: newBalance, referenceId: orderId,
+        description: `Pagamento estornado; ${order.credits - removed} créditos em dívida`, timestamp: Date.now(),
+      });
+      return { success: true, message: 'Estorno conciliado na carteira.' };
     } else {
+      if (order.status === 'approved' || order.status === 'refunded') {
+        return { success: true, message: 'Estado final preservado.' };
+      }
       t.update(orderRef, { status: status === 'rejected' ? 'declined' : 'pending' });
       return { success: true, message: `Status do pedido atualizado para ${status}.` };
     }
