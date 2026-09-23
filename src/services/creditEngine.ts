@@ -153,8 +153,11 @@ export async function reserveConsultationCredits(
       if (cData.uid !== uid) {
         throw new Error('REQUEST_UID_MISMATCH');
       }
-      if (payloadHash && cData.payloadHash && cData.payloadHash !== payloadHash) {
+      if (!payloadHash || cData.payloadHash !== payloadHash) {
         throw new Error('REQUEST_PAYLOAD_MISMATCH');
+      }
+      if (cData.status !== 'completed' || !cData.resultData) {
+        throw new Error('CONSULTATION_IN_PROGRESS');
       }
       const wSnap = await t.get(walletRef);
       const wData = wSnap.data() as UserWallet;
@@ -163,7 +166,7 @@ export async function reserveConsultationCredits(
         consultationId: consultationRef.id,
         balanceAfter: wData?.balance || 0,
         reservedAfter: wData?.reserved || 0,
-        cachedResult: cData.status === 'completed' ? cData.resultData : undefined,
+        cachedResult: cData.resultData,
       };
     }
 
@@ -236,15 +239,18 @@ export async function commitConsultationCredits(
 
   await adminDb.runTransaction(async (t: any) => {
     const consultSnap = await t.get(consultationRef);
-    if (!consultSnap.exists) return;
+    if (!consultSnap.exists) throw new Error('CONSULTATION_NOT_FOUND');
     const cData = consultSnap.data() as any;
-    if (cData.status === 'completed') return; // Idempotent
+    if (cData.uid !== uid) throw new Error('REQUEST_UID_MISMATCH');
+    if (cData.status === 'completed') return;
+    if (cData.status !== 'reserved') throw new Error('CONSULTATION_NOT_RESERVED');
 
     const walletSnap = await t.get(walletRef);
-    if (!walletSnap.exists) return;
+    if (!walletSnap.exists) throw new Error('WALLET_NOT_FOUND');
     const wallet = walletSnap.data() as UserWallet;
+    if (wallet.reserved < 5) throw new Error('INVALID_RESERVED_BALANCE');
 
-    const newReserved = Math.max(0, (wallet.reserved || 0) - 5);
+    const newReserved = wallet.reserved - 5;
     const newSpent = (wallet.spentTotal || 0) + 5;
 
     t.update(walletRef, {
@@ -287,16 +293,19 @@ export async function releaseConsultationCredits(uid: string, requestId: string,
 
   await adminDb.runTransaction(async (t: any) => {
     const consultSnap = await t.get(consultationRef);
-    if (!consultSnap.exists) return;
+    if (!consultSnap.exists) throw new Error('CONSULTATION_NOT_FOUND');
     const cData = consultSnap.data() as any;
-    if (cData.status === 'failed_released' || cData.status === 'completed') return;
+    if (cData.uid !== uid) throw new Error('REQUEST_UID_MISMATCH');
+    if (cData.status === 'completed' || cData.status === 'failed_released') return;
+    if (cData.status !== 'reserved') throw new Error('CONSULTATION_NOT_RESERVED');
 
     const walletSnap = await t.get(walletRef);
-    if (!walletSnap.exists) return;
+    if (!walletSnap.exists) throw new Error('WALLET_NOT_FOUND');
     const wallet = walletSnap.data() as UserWallet;
+    if (wallet.reserved < 5) throw new Error('INVALID_RESERVED_BALANCE');
 
     const newBalance = wallet.balance + 5;
-    const newReserved = Math.max(0, (wallet.reserved || 0) - 5);
+    const newReserved = wallet.reserved - 5;
 
     t.update(walletRef, {
       balance: newBalance,
@@ -326,103 +335,6 @@ export async function releaseConsultationCredits(uid: string, requestId: string,
 }
 
 /**
- * Controle de Acesso e Quota/Cobrança para o Chat Metodológico da IA:
- * - 3 consultas gratuitas por dia por usuário (quota estrita)
- * - Acima da quota diária gratuita, debita atomicamente 1 crédito por consulta de orientação metodológica
- */
-export async function processChatConsultationAccess(
-  uid: string
-): Promise<{ allowed: boolean; isFreeTier: boolean; remainingFreeQuota: number; balanceAfter?: number; error?: string }> {
-  const todayStr = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
-  const quotaRef = adminDb.collection('userChatQuotas').doc(`${uid}_${todayStr}`);
-  const walletRef = adminDb.collection('wallets').doc(uid);
-  const ledgerRef = walletRef.collection('ledger').doc();
-
-  const FREE_DAILY_QUOTA = 3;
-
-  return await adminDb.runTransaction(async (t: any) => {
-    // 1. Leituras
-    const quotaSnap = await t.get(quotaRef);
-    const walletSnap = await t.get(walletRef);
-
-    const currentCount = quotaSnap.exists ? (quotaSnap.data().count || 0) : 0;
-
-    // Se estiver dentro da quota gratuita do dia
-    if (currentCount < FREE_DAILY_QUOTA) {
-      const nextCount = currentCount + 1;
-      t.set(quotaRef, {
-        uid,
-        date: todayStr,
-        count: nextCount,
-        updatedAt: Date.now(),
-      }, { merge: true });
-
-      return {
-        allowed: true,
-        isFreeTier: true,
-        remainingFreeQuota: FREE_DAILY_QUOTA - nextCount,
-      };
-    }
-
-    // Quota gratuita esgotada: requer saldo (1 crédito)
-    if (!walletSnap.exists) {
-      return {
-        allowed: false,
-        isFreeTier: false,
-        remainingFreeQuota: 0,
-        error: 'Quota diária gratuita excedida (3/3). Adicione créditos para continuar consultando o assistente de IA.',
-      };
-    }
-
-    const wallet = walletSnap.data() as UserWallet;
-    if (wallet.balance < 1) {
-      return {
-        allowed: false,
-        isFreeTier: false,
-        remainingFreeQuota: 0,
-        error: 'Quota diária gratuita esgotada (3/3) e saldo insuficiente. É necessário 1 crédito por consulta adicional.',
-      };
-    }
-
-    const newBalance = wallet.balance - 1;
-    const newSpent = (wallet.spentTotal || 0) + 1;
-
-    t.update(walletRef, {
-      balance: newBalance,
-      spentTotal: newSpent,
-      version: (wallet.version || 1) + 1,
-      updatedAt: Date.now(),
-    });
-
-    const ledgerEntry: LedgerEntry = {
-      id: ledgerRef.id,
-      uid,
-      type: 'consultation_commit',
-      amount: -1,
-      balanceAfter: newBalance,
-      description: 'Consulta adicional ao Assistente Metodológico de IA (1 crédito)',
-      referenceId: `chat_${Date.now()}`,
-      timestamp: Date.now(),
-    };
-    t.set(ledgerRef, ledgerEntry);
-
-    t.set(quotaRef, {
-      uid,
-      date: todayStr,
-      count: currentCount + 1,
-      updatedAt: Date.now(),
-    }, { merge: true });
-
-    return {
-      allowed: true,
-      isFreeTier: false,
-      remainingFreeQuota: 0,
-      balanceAfter: newBalance,
-    };
-  });
-}
-
-/**
  * Concessão ou Retirada Manual de Créditos pelo Administrador
  * - Transação atômica
  * - Leituras antes de escritas
@@ -445,7 +357,7 @@ export async function adminAdjustCredits(params: {
 }> {
   const { adminUid, targetUid, action, amount, reason, category, idempotencyKey, referenceId } = params;
 
-  if (!targetUid || typeof targetUid !== 'string' || targetUid.trim().length === 0) {
+  if (!targetUid || typeof targetUid !== 'string' || !/^[a-zA-Z0-9:_-]{1,128}$/.test(targetUid)) {
     throw new Error('UID de usuário alvo inválido.');
   }
 
@@ -489,7 +401,9 @@ export async function adminAdjustCredits(params: {
         existing.targetUid === targetUid &&
         existing.action === action &&
         existing.amount === amount &&
-        existing.reason.trim() === reason.trim();
+        existing.reason.trim() === reason.trim() &&
+        existing.category === category &&
+        (existing.referenceId || null) === (referenceId || null);
 
       if (!isIdentical) {
         const err: any = new Error('Conflito de Idempotência: chave já utilizada com parâmetros diferentes.');
@@ -621,6 +535,8 @@ export async function adminAdjustCredits(params: {
       action,
       amount,
       reason: reason.trim(),
+      category,
+      referenceId: referenceId || null,
       receipt,
       createdAt: now,
     });
@@ -648,5 +564,3 @@ export async function adminAdjustCredits(params: {
     };
   });
 }
-
-

@@ -55,9 +55,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onBackToApp, onOpenAuth 
   const [adjCategory, setAdjCategory] = useState<'courtesy' | 'support' | 'correction' | 'other'>(
     'support'
   );
-  const [idempotencyKey, setIdempotencyKey] = useState<string>(
-    `key_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`
-  );
+  const [idempotencyKey, setIdempotencyKey] = useState<string>(() => crypto.randomUUID());
   const [targetWallet, setTargetWallet] = useState<UserWallet | null>(null);
   const [loadingTargetWallet, setLoadingTargetWallet] = useState(false);
   const [submittingAdj, setSubmittingAdj] = useState(false);
@@ -228,7 +226,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onBackToApp, onOpenAuth 
       setAdjReceipt(data.receipt);
       setTargetWallet(data.wallet);
       // Gerar nova chave para a próxima operação
-      setIdempotencyKey(`key_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`);
+      setIdempotencyKey(crypto.randomUUID());
       // Atualizar lista e overview
       loadOverview();
       loadUsers();
@@ -359,9 +357,10 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onBackToApp, onOpenAuth 
       {/* 1. VISÃO GERAL */}
       {activeTab === 'overview' && (
         <div className="space-y-6">
+          {overview?.metricsPartial && <p role="status" className="text-xs text-amber-300">Métricas parciais: esta visão inclui no máximo 500 registros de cada coleção.</p>}
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
             <div className="bg-[#081120] border border-cyan-500/40 rounded-xl p-4">
-              <span className="text-[10px] font-mono text-slate-400 block mb-1">TOTAL DE USUÁRIOS</span>
+              <span className="text-[10px] font-mono text-slate-400 block mb-1">CARTEIRAS CRIADAS</span>
               <div className="text-2xl sm:text-3xl font-mono font-bold text-cyan-300">
                 {overview?.totalUsers ?? '...'}
               </div>

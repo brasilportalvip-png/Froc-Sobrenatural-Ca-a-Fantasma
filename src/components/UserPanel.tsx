@@ -378,7 +378,7 @@ export const UserPanel: React.FC<UserPanelProps> = ({
               </h4>
               <ul className="text-xs text-slate-400 space-y-2 font-mono">
                 <li>• **Análise Espectral de Áudio & IA**: 5 créditos por consulta efetiva</li>
-                <li>• **Chat Metodológico de Investigação**: 3 consultas diárias gratuitas; 1 crédito por consulta excedente</li>
+                <li>• Chat Metodológico de Investigação: 5 créditos por consulta concluída.</li>
                 <li>• **Sensores, Ouija, Câmera e Teste Duplo-Cego**: 100% locais e gratuitos (0 créditos)</li>
                 <li>• **Reserva Atômica**: Se a IA falhar ou o modelo estiver indisponível, os 5 créditos são integralmente estornados.</li>
               </ul>

@@ -1,12 +1,12 @@
 # Froc Sobrenatural Caça Fantasma
 
-> **Estação avançada de investigação sobrenatural baseada em cadeia de custódia de evidência, análise espectral em tempo real, telemetria de sensores físicos, registro visual e teste duplo-cego.**
+> **Estação de investigação com registro local de evidências, análise de áudio, sensores disponíveis, câmera e teste cego local.**
 
 ---
 
 ## 🔬 Visão e Filosofia do Produto
 
-Diferente de aplicativos comuns de entretenimento que simulam "jogadores fantasmas" ou geram palavras aleatórias num dicionário de terror, o **Froc Sobrenatural Caça Fantasma** opera sob os pilares do **método científico, ceticismo metodológico e cadeia de custódia imutável**:
+O **Froc Sobrenatural Caça Fantasma** registra observações para investigação, separando medições e hipóteses. Registros locais podem ser editados ou apagados pelo titular do dispositivo e não são uma cadeia de custódia imutável:
 
 1. **Cadeia de Evidência Rigorosa**: Cada ocorrência exibe o dado bruto original, a hora exata, o deslocamento temporal na sessão, os valores de sensores no instante, a confiança calibrada e hipóteses alternativas físicas (como interferência de RF, ruído térmico do microfone, reflexo de lente ou pareidolia auditiva).
 2. **Separação Visual Absoluta**:
@@ -63,14 +63,14 @@ Diferente de aplicativos comuns de entretenimento que simulam "jogadores fantasm
    - Gerador de **Relatório Técnico de Investigação Forense** pronto para impressão ou exportação em PDF.
 6. **Teste Cego**:
    - Criação de pergunta de controle selada por um terceiro.
-   - Geração de hash SHA-256 e isolamento da resposta.
+   - Geração de hash SHA-256 e ocultação local da resposta; sem isolamento criptográfico contra acesso ao aparelho.
    - Trava irreversível da hipótese do investigador.
    - Abertura do selo e confronto imparcial com registro de acertos e falhas.
 7. **Configurações & Privacidade**:
    - Diagnóstico e autorização granular de microfone, câmera e acelerômetro.
    - Seletor de dispositivo de áudio (microfone externo vs interno).
    - Estatísticas de armazenamento do IndexedDB com botão de exclusão definitiva.
-   - Transparência total de rede: funcionamento 100% local por padrão.
+   - Evidências locais no IndexedDB; login, pagamento e consultas de IA exigem serviços remotos.
 
 ---
 
@@ -103,15 +103,28 @@ npm run start
 
 O projeto foi configurado com arquitetura híbrida de alto desempenho:
 1. **Frontend**: SPA compilado pelo Vite para `/dist`, servido estaticamente com cache otimizado e Service Worker PWA (`navigateFallbackDenylist: [/^\/api/]`).
-2. **Backend Serverless**: A pasta `api/index.ts` expõe a aplicação Express como função Serverless oficial da Vercel.
+2. **Backend Serverless**: `src/apiEntry.ts` é compilado para a entrada única `api/index.js`. Não crie `api/index.ts` em paralelo: a Vercel rejeita entradas com o mesmo nome base.
 3. **Roteamento `vercel.json`**:
-   - `GET|POST /api/(.*)` redirecionado para a função serverless `api/index.ts`.
+   - `GET|POST /api/(.*)` redirecionado para a função serverless `api/index.js`.
    - `/(.*)` redirecionado para `/index.html` (SPA fallback sem interferir nas rotas de API).
 4. **Variáveis de Ambiente na Vercel**:
    - `GEMINI_API_KEY`: Chave da API do Google Gemini.
    - `APP_URL`: Domínio da aplicação (ex: `https://froc-sobrenatural-ca-a-fantasma.vercel.app`).
    - `MERCADO_PAGO_ACCESS_TOKEN` e `MERCADO_PAGO_WEBHOOK_SECRET`: Credenciais para Checkout Pro e validação segura de Webhooks.
    - `PACKAGE_50_PRICE_CENTS`, `PACKAGE_75_PRICE_CENTS`, `PACKAGE_100_PRICE_CENTS`: Valores em centavos (ex: `2990`). Se indefinidos, o catálogo protege a aplicação sem inventar preços.
+   - `ADMIN_UIDS`: UIDs do Firebase Auth autorizados a abrir `/admin`, separados por vírgula. Copie o UID correto do console Firebase; sem valor configurado e sem custom claim, ninguém é administrador.
+   - `FIREBASE_SERVICE_ACCOUNT_KEY`: JSON da credencial administrativa no ambiente do servidor, caso a identidade de execução não disponibilize credenciais. Jamais use prefixo `VITE_` nesta variável.
+
+### Verificação antes de publicar (Windows CMD)
+
+```cmd
+npm ci
+npm run lint
+npm test
+npm run build
+```
+
+Depois da publicação, confirme que `/api/status` e `/api/packages` devolvem JSON HTTP 200 e que `/api/wallet` sem login devolve HTTP 401. Os testes locais não comprovam Firebase, Gemini ou Mercado Pago de produção. Consultas de análise e chat concluídas consomem **5 créditos** cada; erro técnico antes da conclusão devolve a reserva. O fallback local não afirma comunicação nem substitui uma análise cobrada por IA. Os arquivos de investigação no IndexedDB permanecem somente no aparelho e podem ser apagados pelo navegador.
 
 ---
 
@@ -124,10 +137,10 @@ O projeto foi configurado com arquitetura híbrida de alto desempenho:
 | Filtro Passa-Faixa (Cópia Tratada) | **100% Funcional** | DSP via OfflineAudioContext e exportação WAV |
 | Câmera e Captura Fotográfica | **100% Funcional** | getUserMedia e Canvas snapshot integrado à cadeia |
 | Ouija Digital e Físico | **100% Funcional** | Rastreamento ideomotor manual sem jogadores invisíveis |
-| Teste Duplo-Cego com SHA-256 | **100% Funcional** | Web Crypto API com selagem real |
+| Teste cego local com SHA-256 | **Local** | A resposta ainda está no mesmo aparelho, codificada de modo reversível; não há sigilo criptográfico contra quem acessa o armazenamento |
 | Persistência Local & Exportação JSON | **100% Funcional** | Banco IndexedDB com download de cadeia de custódia |
 | PWA e Instalação | **100% Funcional** | Service worker, manifesto e botão de instalação in-app |
 | Acelerômetro de Movimento | **Funcional no Hardware** | Depende de acelerômetro e permissão no navegador móvel |
 | Magnetômetro (µT) | **Funcional no Hardware** | Requer dispositivo e navegador com W3C Generic Sensor API (ex: Chrome Android com flag de sensor). Se ausente, informa honestamente |
-| Análise Forense com IA (Gemini) | **Depende de GEMINI_API_KEY** | Se configurada no servidor (`.env`), usa `gemini-3.8-flash`. Se ausente, o **Motor Local DSP** assume sem falhas |
+| Análise com Gemini | **Depende de chave e API disponíveis** | Ordem 3.8 → 3.7 → 3.6 Flash. Sem IA configurada, a consulta cobrada não é iniciada; as medições locais permanecem disponíveis |
 | Câmera Térmica / Raio X | **Não aplicável em celular** | Explicitamente alertado na interface que celulares comuns não possuem sensores térmicos ou raio X |

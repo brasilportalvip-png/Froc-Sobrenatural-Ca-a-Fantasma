@@ -72,6 +72,10 @@ service cloud.firestore {
       allow read, write: if false;
     }
 
+    match /rateLimits/{keyId} {
+      allow read, write: if false;
+    }
+
     match /systemConfig/{configId} {
       allow read: if true; // Public catalog of packages & prices
       allow write: if false;

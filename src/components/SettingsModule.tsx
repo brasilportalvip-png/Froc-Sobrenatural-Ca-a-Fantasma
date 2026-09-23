@@ -223,7 +223,7 @@ export const SettingsModule: React.FC<Props> = ({
           <div>
             <strong className="text-cyan-300 font-mono block">CASCATA DE MODELOS COM FAILOVER DE 2 SEGUNDOS:</strong>
             <p className="text-slate-400">
-              O backend orquestra chamadas com ordem de preferência: <code>gemini-3.8-flash</code> &rarr; <code>gemini-3.7-flash</code> &rarr; <code>gemini-2.5-flash</code>. Se um modelo não responder em 2 segundos ou apresentar erro transitório, o timeout aciona o modelo seguinte da cascata. A resposta tardia do modelo anterior é isolada e descartada para impedir cobrança duplicada.
+              O backend tenta <code>gemini-3.8-flash</code> &rarr; <code>gemini-3.7-flash</code> &rarr; <code>gemini-3.6-flash</code>, se disponíveis na conta. Após 2 segundos ele cancela a espera e tenta o próximo. O cancelamento no cliente não garante que o provedor deixou de processar ou cobrar a tentativa anterior. Uma consulta concluída no Froc custa 5 créditos; falha técnica libera a reserva.
             </p>
           </div>
 
