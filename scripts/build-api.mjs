@@ -10,6 +10,9 @@ await build({
   target: 'node20',
   format: 'esm',
   minifyWhitespace: true,
+  // Firestore's generated clients resolve protobuf files beside their own
+  // package. Keep their directory layout in node_modules intact.
+  external: ['@google-cloud/*', '@grpc/*', 'google-gax'],
   outfile: 'api/index.js',
   banner: { js: "import { createRequire } from 'node:module'; const require = createRequire(import.meta.url);" },
 });
