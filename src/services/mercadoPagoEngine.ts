@@ -1,5 +1,64 @@
+import crypto from 'crypto';
 import { adminDb } from './firebaseAdmin';
 import { CreditPackage, OrderItem, LedgerEntry, UserWallet } from '../types';
+
+/**
+ * Validação de Assinatura Oficial HMAC SHA-256 do Webhook do Mercado Pago
+ * https://www.mercadopago.com.br/developers/pt/docs/your-integrations/notifications/webhooks
+ */
+export function verifyMercadoPagoWebhookSignature(
+  xSignatureHeader: string | undefined,
+  xRequestIdHeader: string | undefined,
+  dataId: string | undefined,
+  secretKey: string
+): boolean {
+  if (!xSignatureHeader || !secretKey) {
+    return false;
+  }
+
+  // O cabeçalho vem no formato: ts=1709...;v1=abcdef...
+  const parts = xSignatureHeader.split(',').map((p) => p.trim());
+  let ts = '';
+  let v1 = '';
+
+  for (const part of parts) {
+    const [k, val] = part.split('=');
+    if (k === 'ts') ts = val;
+    if (k === 'v1') v1 = val;
+  }
+
+  if (!ts || !v1) {
+    return false;
+  }
+
+  // Manifest template: id:[data.id_url];request-id:[x-request-id_header];ts:[ts_header];
+  let manifest = '';
+  if (dataId) {
+    manifest += `id:${dataId};`;
+  }
+  if (xRequestIdHeader) {
+    manifest += `request-id:${xRequestIdHeader};`;
+  }
+  manifest += `ts:${ts};`;
+
+  try {
+    const hmac = crypto.createHmac('sha256', secretKey);
+    hmac.update(manifest);
+    const calculatedHash = hmac.digest('hex');
+
+    const bufA = Buffer.from(calculatedHash, 'hex');
+    const bufB = Buffer.from(v1, 'hex');
+    if (bufA.length !== bufB.length) {
+      return false;
+    }
+
+    // Validação em tempo constante para mitigar timing attacks
+    return crypto.timingSafeEqual(bufA, bufB);
+  } catch (err) {
+    console.warn('[Webhook MP] Erro ao validar assinatura:', err);
+    return false;
+  }
+}
 
 /**
  * Catálogo Oficial do Servidor

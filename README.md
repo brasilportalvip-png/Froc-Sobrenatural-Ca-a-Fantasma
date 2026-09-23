@@ -74,29 +74,44 @@ Diferente de aplicativos comuns de entretenimento que simulam "jogadores fantasm
 
 ---
 
-## 🚀 Como Executar o Projeto
+## 🚀 Como Executar o Projeto & Deploy na Vercel
 
 ### Pré-requisitos
-- Node.js 18+ (ou Node 20+)
+- Node.js 20+
 - NPM
 
-### Instalação e Execução
+### Instalação e Execução Local
 
 ```bash
 # 1. Instalar dependências
 npm install
 
-# 2. Iniciar servidor de desenvolvimento (Porta 3000)
+# 2. Executar testes de integração (Segurança, Assinaturas MP, Endpoints /api/*)
+npm test
+
+# 3. Iniciar servidor full-stack local (Express + Vite na Porta 3000)
 npm run dev
 
-# 3. Compilar para produção
+# 4. Compilar para produção
 npm run build
 
-# 4. Iniciar servidor em produção
+# 5. Iniciar servidor Node.js de produção
 npm run start
 ```
 
-Abra `http://localhost:3000` em seu navegador ou dispositivo móvel na mesma rede.
+### Arquitetura de Produção Vercel
+
+O projeto foi configurado com arquitetura híbrida de alto desempenho:
+1. **Frontend**: SPA compilado pelo Vite para `/dist`, servido estaticamente com cache otimizado e Service Worker PWA (`navigateFallbackDenylist: [/^\/api/]`).
+2. **Backend Serverless**: A pasta `api/index.ts` expõe a aplicação Express como função Serverless oficial da Vercel.
+3. **Roteamento `vercel.json`**:
+   - `GET|POST /api/(.*)` redirecionado para a função serverless `api/index.ts`.
+   - `/(.*)` redirecionado para `/index.html` (SPA fallback sem interferir nas rotas de API).
+4. **Variáveis de Ambiente na Vercel**:
+   - `GEMINI_API_KEY`: Chave da API do Google Gemini.
+   - `APP_URL`: Domínio da aplicação (ex: `https://froc-sobrenatural-ca-a-fantasma.vercel.app`).
+   - `MERCADO_PAGO_ACCESS_TOKEN` e `MERCADO_PAGO_WEBHOOK_SECRET`: Credenciais para Checkout Pro e validação segura de Webhooks.
+   - `PACKAGE_50_PRICE_CENTS`, `PACKAGE_75_PRICE_CENTS`, `PACKAGE_100_PRICE_CENTS`: Valores em centavos (ex: `2990`). Se indefinidos, o catálogo protege a aplicação sem inventar preços.
 
 ---
 

@@ -63,7 +63,7 @@ export const CommunicationModule: React.FC<Props> = ({
   onRequestMicPermission,
   hasGemini,
 }) => {
-  const { user, wallet } = useAuth();
+  const { user, wallet, getIdToken } = useAuth();
   const [questionText, setQuestionText] = useState('');
   const [isProcessing, setIsProcessing] = useState(false);
   const [isListeningSpeech, setIsListeningSpeech] = useState(false);
@@ -162,9 +162,15 @@ export const CommunicationModule: React.FC<Props> = ({
     setIsAssistantThinking(true);
 
     try {
+      const token = await getIdToken();
+      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+      if (token) {
+        headers['Authorization'] = `Bearer ${token}`;
+      }
+
       const res = await fetch('/api/chat', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers,
         body: JSON.stringify({
           messages: newMessages,
           sessionContext: {

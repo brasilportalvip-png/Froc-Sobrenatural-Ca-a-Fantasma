@@ -130,24 +130,36 @@ export async function claimFreeGrant(uid: string, userEmail?: string, emailVerif
 
 /**
  * Reserva 5 créditos antes de chamar a IA. Retorna ID da consulta e novo saldo.
+ * Suporta idempotência estrita com hash da requisição e detecção de replay.
  */
-export async function reserveConsultationCredits(uid: string, requestId: string): Promise<{ success: boolean; consultationId: string; balanceAfter: number; reservedAfter: number }> {
+export async function reserveConsultationCredits(
+  uid: string,
+  requestId: string,
+  payloadHash?: string
+): Promise<{ success: boolean; consultationId: string; balanceAfter: number; reservedAfter: number; cachedResult?: any }> {
   const walletRef = adminDb.collection('wallets').doc(uid);
   const consultationRef = adminDb.collection('consultations').doc(requestId);
   const ledgerRef = walletRef.collection('ledger').doc();
 
   return await adminDb.runTransaction(async (t: any) => {
-    // Idempotency check: if consultation already exists for this requestId, return current status
+    // Idempotency check: if consultation already exists for this requestId, check status
     const consultSnap = await t.get(consultationRef);
     if (consultSnap.exists) {
       const cData = consultSnap.data() as any;
+      if (cData.uid !== uid) {
+        throw new Error('REQUEST_UID_MISMATCH');
+      }
+      if (payloadHash && cData.payloadHash && cData.payloadHash !== payloadHash) {
+        throw new Error('REQUEST_PAYLOAD_MISMATCH');
+      }
       const wSnap = await t.get(walletRef);
       const wData = wSnap.data() as UserWallet;
       return {
         success: true,
         consultationId: consultationRef.id,
-        balanceAfter: wData.balance,
-        reservedAfter: wData.reserved,
+        balanceAfter: wData?.balance || 0,
+        reservedAfter: wData?.reserved || 0,
+        cachedResult: cData.status === 'completed' ? cData.resultData : undefined,
       };
     }
 
@@ -175,6 +187,7 @@ export async function reserveConsultationCredits(uid: string, requestId: string)
       id: consultationRef.id,
       requestId,
       uid,
+      payloadHash: payloadHash || null,
       creditsReserved: 5,
       creditsCommitted: 0,
       status: 'reserved',
@@ -204,8 +217,15 @@ export async function reserveConsultationCredits(uid: string, requestId: string)
 
 /**
  * Conclui a consulta convertendo a reserva em débito definitivo (spentTotal + 5, reserved - 5)
+ * e grava o resultado para replay idempotente.
  */
-export async function commitConsultationCredits(uid: string, requestId: string, modelUsed: string, executionTimeMs: number): Promise<void> {
+export async function commitConsultationCredits(
+  uid: string,
+  requestId: string,
+  modelUsed: string,
+  executionTimeMs: number,
+  resultData?: any
+): Promise<void> {
   const walletRef = adminDb.collection('wallets').doc(uid);
   const consultationRef = adminDb.collection('consultations').doc(requestId);
   const ledgerRef = walletRef.collection('ledger').doc();
@@ -235,6 +255,7 @@ export async function commitConsultationCredits(uid: string, requestId: string, 
       creditsCommitted: 5,
       modelUsed,
       executionTimeMs,
+      resultData: resultData || null,
       completedAt: Date.now(),
     });
 

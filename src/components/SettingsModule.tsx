@@ -188,8 +188,16 @@ export const SettingsModule: React.FC<Props> = ({
 
         <div className="p-3 bg-[#0a101d] border border-slate-800 rounded space-y-2 leading-relaxed text-slate-300 font-sans">
           <p>
-            <strong>Armazenamento Local por Padrão:</strong> 100% de todas as amostras de áudio, fotografias, anotações de Ouija e testes duplo-cego são salvos localmente no armazenamento seguro IndexedDB do seu próprio dispositivo. Nada é enviado para servidores externos de modo passivo.
+            <strong>Armazenamento Local no Aparelho:</strong> Por padrão, fotos brutas e anotações completas de sessões ficam salvas no IndexedDB deste navegador. Limpar os dados do navegador apaga as amostras locais.
           </p>
+          <p className="text-[11px] text-slate-400">
+            <strong>O que sai do aparelho e quando:</strong>
+          </p>
+          <ul className="list-disc pl-5 space-y-1 text-[11px] text-slate-400">
+            <li><strong>Verificação de status:</strong> Chamadas a <code>/api/status</code> e <code>/api/packages</code> para conferir serviços ativos.</li>
+            <li><strong>Autenticação &amp; Carteira:</strong> Tokens seguros transmitidos ao Firebase Auth e Firestore para sincronização de saldo e pedidos.</li>
+            <li><strong>Consultoria Pericial:</strong> Ao solicitar análise ou chat com IA, o trecho de áudio/texto e a telemetria do instante são transmitidos de forma segura e criptografada via HTTPS ao endpoint do servidor, sendo processados unicamente para gerar o laudo da consulta contratada.</li>
+          </ul>
           <div className="pt-2 border-t border-slate-800 flex justify-between items-center flex-wrap gap-2 font-mono text-[11px]">
             <div>
               <span className="text-slate-500">Status do Gemini AI: </span>

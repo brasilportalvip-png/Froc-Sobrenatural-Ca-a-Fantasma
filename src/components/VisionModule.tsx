@@ -15,20 +15,38 @@ export const VisionModule: React.FC<Props> = ({
 }) => {
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
-  const [stream, setStream] = useState<MediaStream | null>(null);
+  const streamRef = useRef<MediaStream | null>(null);
+  const lastFrameDataRef = useRef<Uint8ClampedArray | null>(null);
+
   const [cameraActive, setCameraActive] = useState(false);
   const [facingMode, setFacingMode] = useState<'environment' | 'user'>('environment');
   const [cameraError, setCameraError] = useState<string | null>(null);
 
-  // Optical variation / motion contour analyzer state
+  // Optical variation / motion contour analyzer state (honest pixel difference without fabricated shape recognition)
   const [motionPercent, setMotionPercent] = useState<number>(0);
-  const [opticalConfidence, setOpticalConfidence] = useState<number>(0);
-  const [lastFrameData, setLastFrameData] = useState<Uint8ClampedArray | null>(null);
   const [isCapturing, setIsCapturing] = useState(false);
   const [capturedFlash, setCapturedFlash] = useState(false);
 
   // Filter mode for inspection (explicitly labeled as standard digital luminance filters, NOT thermal or x-ray)
   const [inspectionFilter, setInspectionFilter] = useState<'none' | 'high_contrast' | 'edge_enhance'>('none');
+
+  const stopCamera = () => {
+    if (streamRef.current) {
+      streamRef.current.getTracks().forEach((track) => {
+        try {
+          track.stop();
+        } catch {
+          // ignore
+        }
+      });
+      streamRef.current = null;
+    }
+    if (videoRef.current) {
+      videoRef.current.srcObject = null;
+    }
+    lastFrameDataRef.current = null;
+    setCameraActive(false);
+  };
 
   const startCamera = async (mode: 'environment' | 'user' = facingMode) => {
     stopCamera();
@@ -43,11 +61,11 @@ export const VisionModule: React.FC<Props> = ({
         audio: false,
       });
 
+      streamRef.current = mediaStream;
       if (videoRef.current) {
         videoRef.current.srcObject = mediaStream;
         await videoRef.current.play();
       }
-      setStream(mediaStream);
       setCameraActive(true);
     } catch (err: any) {
       console.warn('Erro ao acessar câmera:', err);
@@ -56,66 +74,58 @@ export const VisionModule: React.FC<Props> = ({
     }
   };
 
-  const stopCamera = () => {
-    if (stream) {
-      stream.getTracks().forEach((track) => track.stop());
-      setStream(null);
-    }
-    if (videoRef.current) {
-      videoRef.current.srcObject = null;
-    }
-    setCameraActive(false);
-  };
-
   const toggleFacingMode = () => {
     const next = facingMode === 'environment' ? 'user' : 'environment';
     setFacingMode(next);
     startCamera(next);
   };
 
-  // Optical analysis loop (frame luminance delta)
+  // Optical analysis loop (frame luminance delta) with refs to avoid re-rendering effects every frame
   useEffect(() => {
     if (!cameraActive) return;
 
     let animId: number;
-    const processFrame = () => {
-      const video = videoRef.current;
-      const canvas = canvasRef.current;
-      if (video && canvas && video.readyState >= 2) {
-        const ctx = canvas.getContext('2d', { willReadFrequently: true });
-        if (ctx) {
-          const w = canvas.width;
-          const h = canvas.height;
-          ctx.drawImage(video, 0, 0, w, h);
+    let lastTime = 0;
 
-          const frame = ctx.getImageData(0, 0, w, h);
-          const data = frame.data;
+    const processFrame = (time: number) => {
+      // Throttle to max 15 FPS for battery and performance efficiency
+      if (time - lastTime > 66) {
+        lastTime = time;
+        const video = videoRef.current;
+        const canvas = canvasRef.current;
+        if (video && canvas && video.readyState >= 2) {
+          const ctx = canvas.getContext('2d', { willReadFrequently: true });
+          if (ctx) {
+            const w = canvas.width;
+            const h = canvas.height;
+            ctx.drawImage(video, 0, 0, w, h);
 
-          // Compare with lastFrameData
-          if (lastFrameData && lastFrameData.length === data.length) {
-            let diffSum = 0;
-            const totalPixels = w * h;
+            const frame = ctx.getImageData(0, 0, w, h);
+            const data = frame.data;
+            const prev = lastFrameDataRef.current;
 
-            // Sample every 4th pixel for high performance
-            for (let i = 0; i < data.length; i += 16) {
-              const lumCurrent = 0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2];
-              const lumLast = 0.299 * lastFrameData[i] + 0.587 * lastFrameData[i + 1] + 0.114 * lastFrameData[i + 2];
-              const d = Math.abs(lumCurrent - lumLast);
-              if (d > 25) {
-                diffSum++;
+            // Compare with previous frame
+            if (prev && prev.length === data.length) {
+              let diffSum = 0;
+              const totalPixels = w * h;
+
+              // Sample every 4th pixel for high performance
+              for (let i = 0; i < data.length; i += 16) {
+                const lumCurrent = 0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2];
+                const lumLast = 0.299 * prev[i] + 0.587 * prev[i + 1] + 0.114 * prev[i + 2];
+                const d = Math.abs(lumCurrent - lumLast);
+                if (d > 25) {
+                  diffSum++;
+                }
               }
+
+              const pct = Math.min(100, (diffSum / (totalPixels / 4)) * 100);
+              setMotionPercent(Number(pct.toFixed(1)));
             }
 
-            const pct = Math.min(100, (diffSum / (totalPixels / 4)) * 100);
-            setMotionPercent(Number(pct.toFixed(1)));
-
-            // Calibrated confidence that movement is a physical object vs optical noise
-            const conf = pct > 2 ? Math.min(0.95, pct / 25) : 0;
-            setOpticalConfidence(Number(conf.toFixed(2)));
+            // Save copy for next iteration
+            lastFrameDataRef.current = new Uint8ClampedArray(data);
           }
-
-          // Save copy for next iteration
-          setLastFrameData(new Uint8ClampedArray(data));
         }
       }
       animId = requestAnimationFrame(processFrame);
@@ -123,7 +133,14 @@ export const VisionModule: React.FC<Props> = ({
 
     animId = requestAnimationFrame(processFrame);
     return () => cancelAnimationFrame(animId);
-  }, [cameraActive, lastFrameData]);
+  }, [cameraActive]);
+
+  // Clean unmount using current ref
+  useEffect(() => {
+    return () => {
+      stopCamera();
+    };
+  }, []);
 
   // Capture still photograph into session evidence
   const handleCapturePhoto = async () => {
@@ -143,21 +160,13 @@ export const VisionModule: React.FC<Props> = ({
       ctx.drawImage(video, 0, 0, captureCanvas.width, captureCanvas.height);
       const photoDataUrl = captureCanvas.toDataURL('image/jpeg', 0.9);
 
-      const note = `Captura fotográfica durante sessão. Variação óptica instantânea: ${motionPercent}% | Confiança de forma: ${(
-        opticalConfidence * 100
-      ).toFixed(0)}%. Aviso de pareidolia aplicado.`;
+      const note = `Captura fotográfica durante sessão. Variação óptica de pixels no instante: ${motionPercent}%. Filtro aplicado: ${inspectionFilter}. Classificação: registro óptico bruto para verificação humana.`;
 
       await onSavePhotoEvidence(photoDataUrl, note);
     }
 
     setIsCapturing(false);
   };
-
-  useEffect(() => {
-    return () => {
-      stopCamera();
-    };
-  }, []);
 
   const photoEvidence = evidenceList.filter((e) => e.category === 'photo_capture' && e.photoDataUrl);
 
@@ -250,8 +259,8 @@ export const VisionModule: React.FC<Props> = ({
                     <div className="text-slate-400">VARIAÇÃO: {motionPercent}%</div>
                   </div>
                   <div className="bg-black/60 px-2 py-1 rounded backdrop-blur-sm text-right">
-                    <div>CONFIANÇA: {(opticalConfidence * 100).toFixed(0)}%</div>
-                    <div className="text-slate-400">PAREIDOLIA: POSSÍVEL</div>
+                    <div>DELTA PIXELS: {motionPercent}%</div>
+                    <div className="text-slate-400">AVISO: PAREIDOLIA HUMANA</div>
                   </div>
                 </div>
 

@@ -17,15 +17,20 @@ async function sha256(text: string): Promise<string> {
   return hashArray.map((b) => b.toString(16).padStart(2, '0')).join('');
 }
 
-// Obfuscate / encode string so neither inspector nor memory dump shows raw answer
-function encodePayload(text: string): string {
-  return btoa(encodeURIComponent(text.trim()));
+// Obfuscate / encode string with salt for local hiding before reveal
+function encodePayload(text: string, salt: string): string {
+  return btoa(encodeURIComponent(`${salt}::${text.trim()}`));
 }
-function decodePayload(payload: string): string {
+function decodePayload(payload: string): { secret: string; salt: string } {
   try {
-    return decodeURIComponent(atob(payload));
+    const raw = decodeURIComponent(atob(payload));
+    const parts = raw.split('::');
+    if (parts.length >= 2) {
+      return { salt: parts[0], secret: parts.slice(1).join('::') };
+    }
+    return { salt: '', secret: raw };
   } catch {
-    return payload;
+    return { salt: '', secret: payload };
   }
 }
 
@@ -52,13 +57,18 @@ export const BlindTestModule: React.FC<Props> = ({ activeSession, onLogEvidence 
     e.preventDefault();
     if (!targetSubject.trim() || !sealedSecretAnswer.trim() || !activeSession) return;
 
-    const hash = await sha256(sealedSecretAnswer);
+    // Use random salt/nonce to prevent dictionary / brute force pre-image checks
+    const salt = Array.from(crypto.getRandomValues(new Uint8Array(16)))
+      .map((b) => b.toString(16).padStart(2, '0'))
+      .join('');
+    const hash = await sha256(`${salt}:${sealedSecretAnswer}`);
+
     const newTest: BlindTestItem = {
       id: `bt_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
       sessionId: activeSession.id,
       targetSubject: targetSubject.trim(),
       sealedHash: hash,
-      sealedPayload: encodePayload(sealedSecretAnswer),
+      sealedPayload: encodePayload(sealedSecretAnswer, salt),
       successCriteria: successCriteria.trim() || 'Correspondência exata da palavra ou número',
       sealedAt: Date.now(),
       status: 'sealed',
@@ -75,7 +85,7 @@ export const BlindTestModule: React.FC<Props> = ({ activeSession, onLogEvidence 
 
     await onLogEvidence(
       `Teste Cego Selado: "${newTest.targetSubject}"`,
-      `Protocolo Duplo-Cego iniciado. Resposta de controle selada e isolada criptograficamente (SHA-256: ${hash.slice(0, 16)}...). A IA e o investigador não possuem acesso à resposta.`,
+      `Protocolo de Teste Cego Local iniciado. Resposta de controle selada e ocultada no aparelho com compromisso hash salgado (SHA-256: ${hash.slice(0, 16)}...). Resposta permanece oculta até a gravação da hipótese.`,
       'blind_test_event'
     );
   };
@@ -100,7 +110,7 @@ export const BlindTestModule: React.FC<Props> = ({ activeSession, onLogEvidence 
       await saveBlindTest(target);
       await onLogEvidence(
         `Hipótese Travada para Teste Cego: "${target.targetSubject}"`,
-        `Hipótese do investigador irrevogavelmente travada no sistema antes da abertura do selo: "${target.hypothesisLocked}".`,
+        `Hipótese do investigador travada no sistema antes da abertura do selo: "${target.hypothesisLocked}".`,
         'blind_test_event'
       );
     }
@@ -114,10 +124,15 @@ export const BlindTestModule: React.FC<Props> = ({ activeSession, onLogEvidence 
     const test = tests.find((t) => t.id === testId);
     if (!test || !test.hypothesisLocked) return;
 
-    const revealedAnswer = decodePayload(test.sealedPayload);
+    const { secret: revealedAnswer } = decodePayload(test.sealedPayload);
     const normalizedSecret = revealedAnswer.trim().toLowerCase();
     const normalizedHypothesis = test.hypothesisLocked.trim().toLowerCase();
-    const matched = normalizedSecret === normalizedHypothesis || normalizedHypothesis.includes(normalizedSecret);
+
+    // Avaliação rigorosa: correspondência exata conforme critério definido
+    const isExact = normalizedSecret === normalizedHypothesis;
+    const isSubstring = normalizedHypothesis.includes(normalizedSecret) && normalizedSecret.length >= 3;
+    // Se critério pede correspondência exata, não aceita mera substring frouxa
+    const matched = test.successCriteria.toLowerCase().includes('exata') ? isExact : (isExact || isSubstring);
 
     const updated = tests.map((t) => {
       if (t.id === testId) {
@@ -128,8 +143,8 @@ export const BlindTestModule: React.FC<Props> = ({ activeSession, onLogEvidence 
           status: 'evaluated' as const,
           matched,
           notes: matched
-            ? 'Correspondência verificada de acordo com os critérios pré-estabelecidos.'
-            : 'Discrepância confirmada. Resultado nulo / negativo registrado honestamente.',
+            ? `Correspondência verificada estritamente (${isExact ? 'Exata' : 'Parcial comprovada'}).`
+            : 'Discrepância confirmada. Resultado negativo registrado honestamente na cadeia de custódia.',
         };
       }
       return t;
@@ -140,7 +155,7 @@ export const BlindTestModule: React.FC<Props> = ({ activeSession, onLogEvidence 
       await saveBlindTest(evaluated);
       await onLogEvidence(
         `Resultado do Teste Cego: "${evaluated.targetSubject}" - ${matched ? 'ACERTO' : 'DISCREPÂNCIA (RESULTADO NEGATIVO)'}`,
-        `Resposta Selada Revelada: "${revealedAnswer}" | Hipótese Prévia: "${test.hypothesisLocked}". Resultado: ${matched ? 'Correspondência Positiva' : 'Discrepância / Sem Evidência de Contato'}. Registrado na cadeia de custódia.`,
+        `Resposta Selada Revelada: "${revealedAnswer}" | Hipótese Prévia: "${test.hypothesisLocked}". Resultado: ${matched ? 'Correspondência Positiva' : 'Discrepância / Sem Evidência de Contato'}. Registrado na cadeia de evidências.`,
         'blind_test_event'
       );
     }

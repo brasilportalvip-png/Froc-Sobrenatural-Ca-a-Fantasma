@@ -162,7 +162,7 @@ export const OuijaModule: React.FC<Props> = ({
                   : 'text-slate-400 hover:text-white'
               }`}
             >
-              Tabuleiro Físico (Câmera)
+              Tabuleiro Físico (Anotação Manual)
             </button>
           </div>
         </div>

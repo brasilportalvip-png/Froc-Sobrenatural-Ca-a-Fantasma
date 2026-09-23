@@ -331,19 +331,9 @@ export default function App() {
       });
     }
 
-    // Send to /api/analyze with strict forensic guidelines
-    let analysisResult: any = {
-      candidateTranscription: null,
-      voiceDetected: false,
-      confidence: 0.05,
-      conclusion: 'Nenhuma resposta identificada.',
-      acousticAnalysis: `dBFS: ${audioMetrics.dbfs.toFixed(1)} | Pico: ${audioMetrics.peakFrequencyHz}Hz`,
-      alternativeHypotheses: [
-        'Ruído térmico do transdutor do microfone',
-        'Variação normal do ruído ambiente de fundo',
-      ],
-      provider: hasGemini ? 'Gemini 3.8 Flash' : 'Motor Espectral Local (DSP)',
-    };
+    // Send to /api/analyze with strict forensic guidelines and persistent request id for idempotency
+    let analysisResult: any = null;
+    const persistentRequestId = `req_${now}_${Math.random().toString(36).substring(2, 7)}`;
 
     try {
       const token = await getIdToken();
@@ -351,7 +341,7 @@ export default function App() {
       if (token) {
         headers['Authorization'] = `Bearer ${token}`;
       }
-      headers['x-request-id'] = `req_${now}_${Math.random().toString(36).substring(2, 7)}`;
+      headers['x-request-id'] = persistentRequestId;
 
       const resp = await fetch('/api/analyze', {
         method: 'POST',
@@ -383,15 +373,43 @@ export default function App() {
           candidateTranscription: null,
           voiceDetected: false,
           confidence: 0,
-          conclusion: 'Saldo insuficiente. Esta consulta requer 5 créditos disponíveis na carteira.',
-          acousticAnalysis: 'Consulta recusada por ausência de créditos.',
-          alternativeHypotheses: ['Recarregue sua carteira para continuar.'],
-          provider: 'Sistema de Créditos',
+          conclusion: 'Consulta não realizada: saldo insuficiente (necessário 5 créditos disponíveis).',
+          acousticAnalysis: 'Recusado pelo servidor por ausência de créditos.',
+          alternativeHypotheses: ['Adquira um pacote de créditos para liberar novas análises.'],
+          provider: 'Sistema de Carteira',
+          failed: true,
         };
         setIsWalletModalOpen(true);
+      } else {
+        const errJson = await resp.json().catch(() => ({}));
+        analysisResult = {
+          candidateTranscription: null,
+          voiceDetected: false,
+          confidence: 0,
+          conclusion: 'Análise pericial não realizada devido a falha técnica ou de conexão.',
+          acousticAnalysis: errJson.error || 'Serviço temporariamente indisponível.',
+          alternativeHypotheses: ['Tente novamente mais tarde'],
+          provider: 'Não processado',
+          failed: true,
+        };
       }
-    } catch (err) {
+    } catch (err: any) {
       console.warn('Erro ao processar análise de áudio:', err);
+      analysisResult = {
+        candidateTranscription: null,
+        voiceDetected: false,
+        confidence: 0,
+        conclusion: 'Análise não realizada: sem conexão com o servidor.',
+        acousticAnalysis: 'Falha na comunicação de rede.',
+        alternativeHypotheses: ['Verifique a conexão com a internet'],
+        provider: 'Sem conexão',
+        failed: true,
+      };
+    }
+
+    // Se a consulta falhou antes da execução comprovada ou faltou saldo, não fabrica evidência espúria de resultado
+    if (analysisResult?.failed) {
+      return null;
     }
 
     const newEvidence: EvidenceItem = {

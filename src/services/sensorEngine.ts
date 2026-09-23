@@ -30,7 +30,7 @@ export class SensorEngine {
       y: 0,
       z: 0,
       magnitude: 0,
-      baseline: 45.0, // Typical Earth magnetic field in µT
+      baseline: 0, // Inicia em 0 até medição real e calibração
       delta: 0,
       unit: 'µT',
       statusText: 'Verificando sensor...',
@@ -60,6 +60,9 @@ export class SensorEngine {
           const y = this.magnetometerInstance.y || 0;
           const z = this.magnetometerInstance.z || 0;
           const magnitude = Math.sqrt(x * x + y * y + z * z);
+          if (this.currentReadings.magnetometer.baseline === 0 && magnitude > 0) {
+            this.currentReadings.magnetometer.baseline = Number(magnitude.toFixed(2));
+          }
           const delta = Math.abs(magnitude - this.currentReadings.magnetometer.baseline);
 
           this.currentReadings.magnetometer = {
