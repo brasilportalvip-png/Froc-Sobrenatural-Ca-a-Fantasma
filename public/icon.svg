@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" fill="none">
+  <rect width="512" height="512" rx="96" fill="#06090e"/>
+  <!-- Sensor radar grid circles -->
+  <circle cx="256" cy="256" r="200" stroke="#00f0ff" stroke-width="2" stroke-opacity="0.2"/>
+  <circle cx="256" cy="256" r="140" stroke="#00f0ff" stroke-width="2" stroke-opacity="0.3"/>
+  <circle cx="256" cy="256" r="80" stroke="#00f0ff" stroke-width="2" stroke-opacity="0.4"/>
+  <!-- Crosshairs -->
+  <line x1="256" y1="36" x2="256" y2="476" stroke="#00f0ff" stroke-width="2" stroke-opacity="0.25" stroke-dasharray="8 6"/>
+  <line x1="36" y1="256" x2="476" y2="256" stroke="#00f0ff" stroke-width="2" stroke-opacity="0.25" stroke-dasharray="8 6"/>
+  <!-- Laboratory Signal Wave -->
+  <path d="M 64 256 Q 160 120 256 256 T 448 256" stroke="#00ffb3" stroke-width="8" stroke-linecap="round" fill="none" filter="drop-shadow(0px 0px 12px #00ffb3)"/>
+  <path d="M 120 256 Q 188 180 256 256 T 392 256" stroke="#00f0ff" stroke-width="4" stroke-linecap="round" fill="none" filter="drop-shadow(0px 0px 8px #00f0ff)"/>
+  <!-- Center Evidence Core (Diamond / Prism) -->
+  <polygon points="256,196 306,256 256,316 206,256" fill="#00f0ff" fill-opacity="0.15" stroke="#00f0ff" stroke-width="4"/>
+  <circle cx="256" cy="256" r="8" fill="#00ffb3"/>
+  <!-- FROC text tag -->
+  <text x="256" y="420" font-family="system-ui, -apple-system, sans-serif" font-weight="900" font-size="34" fill="#00f0ff" letter-spacing="8" text-anchor="middle">FROC</text>
+  <text x="256" y="445" font-family="system-ui, -apple-system, sans-serif" font-weight="600" font-size="14" fill="#64748b" letter-spacing="4" text-anchor="middle">SINAIS &amp; EVIDÊNCIAS</text>
+</svg>

@@ -1,0 +1,74 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Helper functions
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+
+    // Users collection: users can read and write only their own basic profile info
+    match /users/{userId} {
+      allow read: if isOwner(userId);
+      allow create: if isOwner(userId);
+      allow update: if isOwner(userId) 
+        && !request.resource.data.diff(resource.data).affectedKeys().hasAny(['role', 'isEligibleForFreeGrant', 'emailVerifiedManually']);
+      allow delete: if false;
+    }
+
+    // Wallets: User can ONLY read their own wallet. Clients NEVER write balance, version, or reserved!
+    match /wallets/{userId} {
+      allow read: if isOwner(userId);
+      allow write: if false; // Only backend (Admin SDK) can write to wallet
+
+      // Ledger: User can ONLY read their ledger entries
+      match /ledger/{entryId} {
+        allow read: if isOwner(userId);
+        allow write: if false; // Append-only by backend (Admin SDK)
+      }
+    }
+
+    // Free Grants: User can ONLY read if grant was applied to them. Never write from client.
+    match /freeGrants/{grantId} {
+      allow read: if isAuthenticated() && resource.data.uid == request.auth.uid;
+      allow write: if false;
+    }
+
+    // Consultations: User can read their own consultations. Write handled exclusively by backend.
+    match /consultations/{consultationId} {
+      allow read: if isAuthenticated() && resource.data.uid == request.auth.uid;
+      allow write: if false;
+    }
+
+    // Orders: User can read their own orders. Only backend writes order status and token.
+    match /orders/{orderId} {
+      allow read: if isAuthenticated() && resource.data.uid == request.auth.uid;
+      allow write: if false;
+    }
+
+    // Evidence & Media references stored in Firestore
+    match /evidence/{evidenceId} {
+      allow read: if isAuthenticated() && resource.data.uid == request.auth.uid;
+      allow create: if isAuthenticated() && request.resource.data.uid == request.auth.uid;
+      allow update, delete: if isAuthenticated() && resource.data.uid == request.auth.uid;
+    }
+
+    // Payment events, audit logs, risk events: Internal only, never readable by standard clients
+    match /paymentEvents/{eventId} {
+      allow read, write: if false;
+    }
+
+    match /auditLogs/{logId} {
+      allow read, write: if false;
+    }
+
+    match /systemConfig/{configId} {
+      allow read: if true; // Public catalog of packages & prices
+      allow write: if false;
+    }
+  }
+}

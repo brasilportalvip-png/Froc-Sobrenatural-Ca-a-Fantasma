@@ -1,0 +1,845 @@
+import React, { useState, useEffect, useRef } from 'react';
+import {
+  ModuleTab,
+  Session,
+  EvidenceItem,
+  SensorState,
+  EvidenceCategory,
+} from './types';
+import {
+  saveSession,
+  loadSessions,
+  deleteSession,
+  saveEvidenceItem,
+  loadSessionEvidence,
+} from './services/storage';
+import { AudioEngine, AudioMetrics } from './services/audioEngine';
+import { SensorEngine } from './services/sensorEngine';
+import { CommunicationModule } from './components/CommunicationModule';
+import { VisionModule } from './components/VisionModule';
+import { OuijaModule } from './components/OuijaModule';
+import { SensorsModule } from './components/SensorsModule';
+import { EvidenceModule } from './components/EvidenceModule';
+import { BlindTestModule } from './components/BlindTestModule';
+import { SettingsModule } from './components/SettingsModule';
+import { PWAInstallButton, OfflineIndicator } from './components/PWAInstallButton';
+import { AuthModal } from './components/AuthModal';
+import { WalletModal } from './components/WalletModal';
+import { useAuth } from './services/AuthContext';
+import {
+  Radio,
+  Eye,
+  Compass,
+  Gauge,
+  ShieldCheck,
+  Lock,
+  Settings,
+  Activity,
+  Layers,
+  Sparkles,
+  User,
+  Wallet,
+} from 'lucide-react';
+
+export default function App() {
+  const { user, wallet, getIdToken, refreshWallet } = useAuth();
+  const [activeTab, setActiveTab] = useState<ModuleTab>('communication');
+
+  // Modals state
+  const [isAuthModalOpen, setIsAuthModalOpen] = useState(false);
+  const [isWalletModalOpen, setIsWalletModalOpen] = useState(false);
+
+  // Sessions and Evidence State
+  const [sessions, setSessions] = useState<Session[]>([]);
+  const [activeSession, setActiveSession] = useState<Session | null>(null);
+  const [selectedSessionId, setSelectedSessionId] = useState<string>('');
+  const [evidenceList, setEvidenceList] = useState<EvidenceItem[]>([]);
+  const [highlightedEvidenceId, setHighlightedEvidenceId] = useState<string | null>(null);
+
+  // Audio Engine & Metrics
+  const audioEngineRef = useRef<AudioEngine | null>(null);
+  const [hasAudioPermission, setHasAudioPermission] = useState(false);
+  const [isRecordingAudio, setIsRecordingAudio] = useState(false);
+  const [audioMetrics, setAudioMetrics] = useState<AudioMetrics>({
+    dbfs: -100,
+    rms: 0,
+    peakFrequencyHz: 0,
+    isVoiceBand: false,
+    frequencyData: new Uint8Array(0),
+    timeData: new Uint8Array(0),
+  });
+
+  // Sensor Engine & Telemetry State
+  const sensorEngineRef = useRef<SensorEngine | null>(null);
+  const [sensorState, setSensorState] = useState<SensorState>({
+    magnetometer: {
+      available: false,
+      x: 0,
+      y: 0,
+      z: 0,
+      magnitude: 0,
+      baseline: 45.0,
+      delta: 0,
+      unit: 'µT',
+      statusText: 'Iniciando...',
+    },
+    motion: {
+      available: false,
+      x: 0,
+      y: 0,
+      z: 0,
+      magnitude: 0,
+      unit: 'm/s²',
+      statusText: 'Iniciando...',
+    },
+    audioLevel: {
+      dbfs: -100,
+      rms: 0,
+      peakHz: 0,
+      isSpeechBand: false,
+    },
+  });
+
+  // Hardware Devices
+  const [availableMics, setAvailableMics] = useState<MediaDeviceInfo[]>([]);
+  const [selectedMicId, setSelectedMicId] = useState<string>('');
+
+  // Server & AI Status
+  const [hasGemini, setHasGemini] = useState(false);
+
+  // Initialize Engines & Storage
+  useEffect(() => {
+    audioEngineRef.current = new AudioEngine();
+    sensorEngineRef.current = new SensorEngine();
+
+    // Check backend server status
+    fetch('/api/status')
+      .then((res) => res.json())
+      .then((data) => {
+        setHasGemini(!!data.hasGemini);
+      })
+      .catch(() => {
+        setHasGemini(false);
+      });
+
+    // Load saved sessions from IndexedDB
+    loadSessions().then((list) => {
+      setSessions(list);
+      if (list.length > 0) {
+        const first = list[0];
+        setSelectedSessionId(first.id);
+        if (first.status === 'active') {
+          setActiveSession(first);
+        }
+      }
+    });
+
+    // Initialize sensors
+    sensorEngineRef.current.initSensors();
+
+    // Enumerate audio devices
+    if (navigator.mediaDevices && navigator.mediaDevices.enumerateDevices) {
+      navigator.mediaDevices.enumerateDevices().then((devices) => {
+        const mics = devices.filter((d) => d.kind === 'audioinput');
+        setAvailableMics(mics);
+        if (mics.length > 0 && !selectedMicId) {
+          setSelectedMicId(mics[0].deviceId);
+        }
+      });
+    }
+
+    return () => {
+      audioEngineRef.current?.stopMicrophone();
+      sensorEngineRef.current?.stop();
+    };
+  }, []);
+
+  // Real-time animation loop for audio & sensor polling
+  useEffect(() => {
+    let animId: number;
+
+    const tick = () => {
+      if (audioEngineRef.current) {
+        const metrics = audioEngineRef.current.getMetrics();
+        setAudioMetrics(metrics);
+
+        const sensors = sensorEngineRef.current?.getReadings();
+        if (sensors) {
+          setSensorState({
+            magnetometer: {
+              ...sensors.magnetometer,
+              unit: 'µT',
+            },
+            motion: {
+              ...sensors.motion,
+              unit: 'm/s²',
+            },
+            audioLevel: {
+              dbfs: metrics.dbfs,
+              rms: metrics.rms,
+              peakHz: metrics.peakFrequencyHz,
+              isSpeechBand: metrics.isVoiceBand,
+            },
+          });
+        }
+      }
+      animId = requestAnimationFrame(tick);
+    };
+
+    animId = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(animId);
+  }, []);
+
+  // Load evidence whenever selectedSessionId changes
+  useEffect(() => {
+    if (selectedSessionId) {
+      loadSessionEvidence(selectedSessionId).then((items) => {
+        setEvidenceList(items);
+      });
+    } else {
+      setEvidenceList([]);
+    }
+  }, [selectedSessionId]);
+
+  // Request Microphone Permission
+  const requestMicPermission = async () => {
+    if (!audioEngineRef.current) return;
+    const ok = await audioEngineRef.current.startMicrophone(selectedMicId);
+    setHasAudioPermission(ok);
+
+    // Refresh devices list to get real labels
+    if (ok && navigator.mediaDevices.enumerateDevices) {
+      const devices = await navigator.mediaDevices.enumerateDevices();
+      setAvailableMics(devices.filter((d) => d.kind === 'audioinput'));
+    }
+  };
+
+  // Start a New Session
+  const handleStartSession = async () => {
+    const newSession: Session = {
+      id: `froc_session_${Date.now()}`,
+      title: `Sessão de Campo #${sessions.length + 1}`,
+      startTime: Date.now(),
+      investigatorName: 'Investigador Principal',
+      locationNotes: 'Ambiente controlado',
+      status: 'active',
+      evidenceCount: 0,
+    };
+
+    await saveSession(newSession);
+    setActiveSession(newSession);
+    setSelectedSessionId(newSession.id);
+    setSessions((prev) => [newSession, ...prev]);
+    setEvidenceList([]);
+
+    // Auto connect mic if not already
+    if (!hasAudioPermission) {
+      await requestMicPermission();
+    }
+  };
+
+  // End Current Session
+  const handleEndSession = async () => {
+    if (!activeSession) return;
+    const finished: Session = {
+      ...activeSession,
+      status: 'concluded',
+      endTime: Date.now(),
+      evidenceCount: evidenceList.length,
+    };
+
+    if (isRecordingAudio && audioEngineRef.current) {
+      await audioEngineRef.current.stopRecording();
+      setIsRecordingAudio(false);
+    }
+
+    await saveSession(finished);
+    setActiveSession(null);
+    setSessions((prev) => prev.map((s) => (s.id === finished.id ? finished : s)));
+  };
+
+  // Toggle Audio Recording
+  const handleToggleRecording = async () => {
+    if (!audioEngineRef.current) return;
+
+    if (!hasAudioPermission) {
+      await requestMicPermission();
+    }
+
+    if (isRecordingAudio) {
+      await audioEngineRef.current.stopRecording();
+      setIsRecordingAudio(false);
+    } else {
+      const started = audioEngineRef.current.startRecording();
+      setIsRecordingAudio(started);
+    }
+  };
+
+  // Add Question & Signal Evidence (called by CommunicationModule)
+  const handleAddQuestionEvidence = async (
+    question: string,
+    candidateBlob?: Blob
+  ): Promise<EvidenceItem | null> => {
+    let currentSession = activeSession;
+
+    // Auto-create session if user submits question directly
+    if (!currentSession) {
+      const newSession: Session = {
+        id: `froc_session_${Date.now()}`,
+        title: `Sessão Rápida #${sessions.length + 1}`,
+        startTime: Date.now(),
+        investigatorName: 'Investigador Principal',
+        locationNotes: 'Início instantâneo',
+        status: 'active',
+        evidenceCount: 0,
+      };
+      await saveSession(newSession);
+      setActiveSession(newSession);
+      setSelectedSessionId(newSession.id);
+      setSessions((prev) => [newSession, ...prev]);
+      currentSession = newSession;
+    }
+
+    const now = Date.now();
+    const relativeTimeSec = Math.max(0, (now - currentSession.startTime) / 1000);
+    const formattedTime = new Date(now).toLocaleTimeString();
+    const evidenceId = `ev_${now}_${Math.random().toString(36).slice(2, 6)}`;
+
+    // Prepare audio sample: use passed blob or record a 2.5s slice for forensic analysis
+    let audioBlobToSave = candidateBlob;
+    let base64Audio = '';
+    let mimeType = 'audio/webm';
+
+    // If microphone is active and no blob passed, let's grab the current stream segment
+    if (!audioBlobToSave && audioEngineRef.current) {
+      // If recorder was already running, stop or capture slice
+      if (isRecordingAudio) {
+        const rec = await audioEngineRef.current.stopRecording();
+        audioBlobToSave = rec.blob;
+        mimeType = rec.mimeType;
+        // restart recording for continuous session
+        audioEngineRef.current.startRecording();
+      }
+    }
+
+    // Convert audio to base64 for API if present
+    if (audioBlobToSave && audioBlobToSave.size > 0) {
+      const reader = new FileReader();
+      base64Audio = await new Promise((resolve) => {
+        reader.onloadend = () => resolve(reader.result as string);
+        reader.readAsDataURL(audioBlobToSave!);
+      });
+    }
+
+    // Send to /api/analyze with strict forensic guidelines
+    let analysisResult: any = {
+      candidateTranscription: null,
+      voiceDetected: false,
+      confidence: 0.05,
+      conclusion: 'Nenhuma resposta identificada.',
+      acousticAnalysis: `dBFS: ${audioMetrics.dbfs.toFixed(1)} | Pico: ${audioMetrics.peakFrequencyHz}Hz`,
+      alternativeHypotheses: [
+        'Ruído térmico do transdutor do microfone',
+        'Variação normal do ruído ambiente de fundo',
+      ],
+      provider: hasGemini ? 'Gemini 3.8 Flash' : 'Motor Espectral Local (DSP)',
+    };
+
+    try {
+      const token = await getIdToken();
+      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+      if (token) {
+        headers['Authorization'] = `Bearer ${token}`;
+      }
+      headers['x-request-id'] = `req_${now}_${Math.random().toString(36).substring(2, 7)}`;
+
+      const resp = await fetch('/api/analyze', {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({
+          question,
+          audioBase64: base64Audio || undefined,
+          mimeType,
+          audioMetrics: {
+            dbfs: audioMetrics.dbfs,
+            peakFrequencyHz: audioMetrics.peakFrequencyHz,
+            rms: audioMetrics.rms,
+            isVoiceBand: audioMetrics.isVoiceBand,
+          },
+          sensorContext: {
+            magnetometer: sensorState.magnetometer,
+            motion: sensorState.motion,
+          },
+        }),
+      });
+
+      if (resp.ok) {
+        analysisResult = await resp.json();
+        // Sincronizar saldo de créditos da carteira imediatamente
+        await refreshWallet();
+      } else if (resp.status === 402) {
+        const errJson = await resp.json();
+        analysisResult = {
+          candidateTranscription: null,
+          voiceDetected: false,
+          confidence: 0,
+          conclusion: 'Saldo insuficiente. Esta consulta requer 5 créditos disponíveis na carteira.',
+          acousticAnalysis: 'Consulta recusada por ausência de créditos.',
+          alternativeHypotheses: ['Recarregue sua carteira para continuar.'],
+          provider: 'Sistema de Créditos',
+        };
+        setIsWalletModalOpen(true);
+      }
+    } catch (err) {
+      console.warn('Erro ao processar análise de áudio:', err);
+    }
+
+    const newEvidence: EvidenceItem = {
+      id: evidenceId,
+      sessionId: currentSession.id,
+      timestamp: now,
+      formattedTime,
+      relativeTimeSec,
+      category: 'question',
+      title: `Pergunta: "${question}"`,
+      details: analysisResult.conclusion || 'Análise registrada.',
+      questionText: question,
+      signalData: {
+        dbfs: audioMetrics.dbfs,
+        peakFrequencyHz: audioMetrics.peakFrequencyHz,
+        rms: audioMetrics.rms,
+        magneticMagnitudeUtd: sensorState.magnetometer.available
+          ? sensorState.magnetometer.magnitude
+          : undefined,
+        magneticDeltaUtd: sensorState.magnetometer.available
+          ? sensorState.magnetometer.delta
+          : undefined,
+        motionMagnitude: sensorState.motion.available
+          ? sensorState.motion.magnitude
+          : undefined,
+      },
+      audioId: audioBlobToSave ? `audio_${evidenceId}` : undefined,
+      hasAudio: !!audioBlobToSave && audioBlobToSave.size > 0,
+      candidateTranscription: analysisResult.candidateTranscription || null,
+      confidenceScore: analysisResult.confidence || 0,
+      possibleName: analysisResult.possibleName || undefined,
+      decisionStatus: 'pending',
+      aiAnalysis: {
+        conclusion: analysisResult.conclusion || 'Nenhuma resposta identificada.',
+        confidence: analysisResult.confidence || 0,
+        voiceDetected: analysisResult.voiceDetected || false,
+        acousticAnalysis: analysisResult.acousticAnalysis || '',
+        alternativeHypotheses: analysisResult.alternativeHypotheses || [],
+        provider: analysisResult.provider || 'Motor Local',
+      },
+      verifiedStatus: analysisResult.candidateTranscription
+        ? 'inconclusive'
+        : 'refuted_noise',
+    };
+
+    await saveEvidenceItem(newEvidence, audioBlobToSave);
+    setEvidenceList((prev) => [newEvidence, ...prev]);
+
+    return newEvidence;
+  };
+
+  // Add Photo Evidence (called by VisionModule)
+  const handleSavePhotoEvidence = async (photoDataUrl: string, analysisNote: string) => {
+    let currentSession = activeSession;
+    if (!currentSession) {
+      await handleStartSession();
+      currentSession = activeSession;
+    }
+    const sessionId = currentSession?.id || selectedSessionId;
+    const now = Date.now();
+    const relativeTimeSec = currentSession
+      ? Math.max(0, (now - currentSession.startTime) / 1000)
+      : 0;
+
+    const evidenceId = `ev_photo_${now}`;
+    const newEvidence: EvidenceItem = {
+      id: evidenceId,
+      sessionId,
+      timestamp: now,
+      formattedTime: new Date(now).toLocaleTimeString(),
+      relativeTimeSec,
+      category: 'photo_capture',
+      title: 'Fotografia Forense de Campo',
+      details: analysisNote,
+      photoDataUrl,
+      signalData: {
+        dbfs: audioMetrics.dbfs,
+        peakFrequencyHz: audioMetrics.peakFrequencyHz,
+        rms: audioMetrics.rms,
+        magneticMagnitudeUtd: sensorState.magnetometer.available
+          ? sensorState.magnetometer.magnitude
+          : undefined,
+      },
+      verifiedStatus: 'none',
+    };
+
+    await saveEvidenceItem(newEvidence);
+    setEvidenceList((prev) => [newEvidence, ...prev]);
+  };
+
+  // Add Ouija Evidence (called by OuijaModule)
+  const handleSaveOuijaEvidence = async (
+    mode: 'physical' | 'digital',
+    letters: string,
+    notes: string,
+    durationSec: number
+  ) => {
+    const sessionId = activeSession?.id || selectedSessionId;
+    const now = Date.now();
+    const relativeTimeSec = activeSession
+      ? Math.max(0, (now - activeSession.startTime) / 1000)
+      : 0;
+
+    const evidenceId = `ev_ouija_${now}`;
+    const newEvidence: EvidenceItem = {
+      id: evidenceId,
+      sessionId,
+      timestamp: now,
+      formattedTime: new Date(now).toLocaleTimeString(),
+      relativeTimeSec,
+      category: 'ouija_record',
+      title: `Registro Ouija (${mode === 'digital' ? 'Tabuleiro Digital' : 'Tabuleiro Físico'})`,
+      details: notes,
+      ouijaRecord: {
+        mode,
+        letters,
+        operatorNote: notes,
+        dwellTimeSec: durationSec,
+      },
+      verifiedStatus: 'inconclusive',
+    };
+
+    await saveEvidenceItem(newEvidence);
+    setEvidenceList((prev) => [newEvidence, ...prev]);
+  };
+
+  // Log generic evidence (e.g. from BlindTest)
+  const handleLogEvidence = async (
+    title: string,
+    details: string,
+    category: EvidenceCategory
+  ) => {
+    const sessionId = activeSession?.id || selectedSessionId;
+    const now = Date.now();
+    const relativeTimeSec = activeSession
+      ? Math.max(0, (now - activeSession.startTime) / 1000)
+      : 0;
+
+    const evidenceId = `ev_log_${now}`;
+    const newEvidence: EvidenceItem = {
+      id: evidenceId,
+      sessionId,
+      timestamp: now,
+      formattedTime: new Date(now).toLocaleTimeString(),
+      relativeTimeSec,
+      category,
+      title,
+      details,
+      verifiedStatus: 'none',
+    };
+
+    await saveEvidenceItem(newEvidence);
+    setEvidenceList((prev) => [newEvidence, ...prev]);
+  };
+
+  // Jump to Evidence module and select item
+  const handleNavigateToEvidence = (evidenceId: string) => {
+    setHighlightedEvidenceId(evidenceId);
+    setActiveTab('evidence');
+  };
+
+  // Update forensic decision classification for an evidence item
+  const handleUpdateEvidenceDecision = async (
+    evidenceId: string,
+    status: 'interference_marked' | 'confirmed_candidate' | 'discarded'
+  ) => {
+    const updated = evidenceList.map((item) => {
+      if (item.id === evidenceId) {
+        return {
+          ...item,
+          decisionStatus: status,
+        };
+      }
+      return item;
+    });
+
+    const target = updated.find((i) => i.id === evidenceId);
+    if (target) {
+      await saveEvidenceItem(target);
+    }
+    setEvidenceList(updated);
+  };
+
+  // Add independent review to an evidence item
+  const handleAddIndependentReview = async (
+    evidenceId: string,
+    reviewerName: string,
+    heardText: string
+  ) => {
+    const updated = evidenceList.map((item) => {
+      if (item.id === evidenceId) {
+        const reviews = item.independentReviews || [];
+        return {
+          ...item,
+          independentReviews: [
+            ...reviews,
+            { reviewerName, heardText, timestamp: Date.now() },
+          ],
+        };
+      }
+      return item;
+    });
+
+    const target = updated.find((i) => i.id === evidenceId);
+    if (target) {
+      await saveEvidenceItem(target);
+    }
+    setEvidenceList(updated);
+  };
+
+  // Delete Session
+  const handleDeleteSession = async (sessionId: string) => {
+    await deleteSession(sessionId);
+    const updated = sessions.filter((s) => s.id !== sessionId);
+    setSessions(updated);
+    if (activeSession?.id === sessionId) setActiveSession(null);
+    if (selectedSessionId === sessionId) {
+      setSelectedSessionId(updated.length > 0 ? updated[0].id : '');
+    }
+  };
+
+  // Clear all data
+  const handleClearAllData = async () => {
+    for (const s of sessions) {
+      await deleteSession(s.id);
+    }
+    setSessions([]);
+    setActiveSession(null);
+    setSelectedSessionId('');
+    setEvidenceList([]);
+  };
+
+  return (
+    <div className="min-h-screen bg-[#05080f] text-slate-100 flex flex-col font-sans">
+      {/* Offline Connectivity Banner */}
+      <OfflineIndicator />
+
+      {/* Top Main Navigation Header */}
+      <header className="border-b border-cyan-950/80 bg-[#070d18]/90 backdrop-blur-md sticky top-0 z-40">
+        <div className="max-w-7xl mx-auto px-3 sm:px-4 py-2.5 flex justify-between items-center">
+          {/* Brand & Identity */}
+          <div className="flex items-center gap-3">
+            {/* Custom Laboratory Signal Icon */}
+            <div className="w-8 h-8 rounded bg-[#091322] border border-cyan-400/50 flex items-center justify-center p-1 shadow-[0_0_12px_rgba(0,240,255,0.25)]">
+              <svg viewBox="0 0 100 100" fill="none" className="w-full h-full">
+                <circle cx="50" cy="50" r="42" stroke="#00f0ff" strokeWidth="3" strokeOpacity="0.4" />
+                <path d="M 15 50 Q 32 20 50 50 T 85 50" stroke="#00ffb3" strokeWidth="6" strokeLinecap="round" />
+                <polygon points="50,38 60,50 50,62 40,50" fill="#00f0ff" stroke="#00f0ff" strokeWidth="2" />
+              </svg>
+            </div>
+
+            <div>
+              <div className="flex items-center gap-1.5">
+                <h1 className="text-xs sm:text-sm font-black tracking-widest text-transparent bg-clip-text bg-gradient-to-r from-cyan-400 via-teal-300 to-emerald-400 uppercase font-mono">
+                  FROC SOBRENATURAL
+                </h1>
+                <span className="text-[9px] font-mono px-1 py-0.2 rounded bg-cyan-950 border border-cyan-500/40 text-cyan-300">
+                  CAÇA FANTASMA
+                </span>
+              </div>
+              <p className="text-[10px] text-slate-400 font-mono hidden sm:block">
+                Estação Forense de Cadeia de Evidência &amp; Análise Espectral
+              </p>
+            </div>
+          </div>
+
+          {/* Quick Status Badges, Wallet, Auth & PWA Install */}
+          <div className="flex items-center gap-2">
+            {activeSession && (
+              <div className="hidden md:flex items-center gap-1.5 bg-emerald-950/60 border border-emerald-500/50 px-2 py-0.5 rounded text-[11px] font-mono text-emerald-300">
+                <span className="w-2 h-2 rounded-full bg-emerald-400 animate-ping" />
+                <span>SESSÃO ATIVA</span>
+              </div>
+            )}
+
+            {/* Wallet Button */}
+            <button
+              onClick={() => setIsWalletModalOpen(true)}
+              className="flex items-center gap-1.5 bg-[#091528] hover:bg-[#0d1e38] border border-cyan-500/50 px-2.5 py-1 rounded text-xs font-mono text-cyan-300 cursor-pointer transition shadow"
+              title="Abrir Carteira & Créditos"
+            >
+              <Wallet className="w-3.5 h-3.5 text-cyan-400" />
+              <span>{wallet ? wallet.balance : 0}</span>
+              <span className="text-[10px] text-slate-400 hidden sm:inline">CRÉDITOS</span>
+            </button>
+
+            {/* User Account Button */}
+            <button
+              onClick={() => setIsAuthModalOpen(true)}
+              className={`flex items-center gap-1.5 px-2.5 py-1 rounded text-xs font-mono border transition cursor-pointer ${
+                user
+                  ? 'bg-slate-900 border-slate-700 text-slate-200 hover:border-cyan-500'
+                  : 'bg-cyan-950 border-cyan-500/80 text-cyan-300 hover:bg-cyan-900'
+              }`}
+            >
+              <User className="w-3.5 h-3.5" />
+              <span className="max-w-[100px] truncate hidden sm:inline">
+                {user ? user.email?.split('@')[0] : 'Entrar'}
+              </span>
+            </button>
+
+            <PWAInstallButton />
+          </div>
+        </div>
+
+        {/* Modular Navigation Tabs Bar */}
+        <nav className="max-w-7xl mx-auto px-2 sm:px-4 flex gap-1 overflow-x-auto no-scrollbar border-t border-slate-900 pt-1">
+          {[
+            { id: 'communication' as const, label: 'Comunicação', icon: Radio },
+            { id: 'vision' as const, label: 'Visão', icon: Eye },
+            { id: 'ouija' as const, label: 'Ouija', icon: Compass },
+            { id: 'sensors' as const, label: 'Sensores', icon: Gauge },
+            {
+              id: 'evidence' as const,
+              label: `Evidências (${evidenceList.length})`,
+              icon: ShieldCheck,
+            },
+            { id: 'blindtest' as const, label: 'Teste Cego', icon: Lock },
+            { id: 'settings' as const, label: 'Configurações', icon: Settings },
+          ].map((tab) => {
+            const Icon = tab.icon;
+            const isActive = activeTab === tab.id;
+            return (
+              <button
+                key={tab.id}
+                onClick={() => setActiveTab(tab.id)}
+                className={`flex items-center gap-1.5 px-3 py-2 text-xs font-mono font-semibold border-b-2 transition whitespace-nowrap cursor-pointer ${
+                  isActive
+                    ? 'border-cyan-400 text-cyan-300 bg-cyan-950/40 shadow-[0_2px_8px_rgba(0,240,255,0.2)]'
+                    : 'border-transparent text-slate-400 hover:text-slate-200 hover:bg-slate-900/40'
+                }`}
+              >
+                <Icon className={`w-3.5 h-3.5 ${isActive ? 'text-cyan-400' : 'text-slate-500'}`} />
+                <span>{tab.label}</span>
+              </button>
+            );
+          })}
+        </nav>
+      </header>
+
+      {/* Main Module Content Viewport */}
+      <main className="flex-1 max-w-7xl w-full mx-auto p-3 sm:p-4">
+        {activeTab === 'communication' && (
+          <CommunicationModule
+            activeSession={activeSession}
+            onStartSession={handleStartSession}
+            onEndSession={handleEndSession}
+            isRecording={isRecordingAudio}
+            onToggleRecording={handleToggleRecording}
+            audioMetrics={audioMetrics}
+            sensorState={sensorState}
+            evidenceList={evidenceList}
+            onAddQuestionEvidence={handleAddQuestionEvidence}
+            onNavigateToEvidence={handleNavigateToEvidence}
+            onUpdateEvidenceDecision={handleUpdateEvidenceDecision}
+            onNavigateTab={(tab) => setActiveTab(tab)}
+            onOpenWallet={() => setIsWalletModalOpen(true)}
+            hasAudioPermission={hasAudioPermission}
+            onRequestMicPermission={requestMicPermission}
+            hasGemini={hasGemini}
+          />
+        )}
+
+        {activeTab === 'vision' && (
+          <VisionModule
+            activeSession={activeSession}
+            onSavePhotoEvidence={handleSavePhotoEvidence}
+            evidenceList={evidenceList}
+          />
+        )}
+
+        {activeTab === 'ouija' && (
+          <OuijaModule
+            activeSession={activeSession}
+            onSaveOuijaEvidence={handleSaveOuijaEvidence}
+            evidenceList={evidenceList}
+          />
+        )}
+
+        {activeTab === 'sensors' && (
+          <SensorsModule
+            sensorState={sensorState}
+            onCalibrateMagneticBaseline={() =>
+              sensorEngineRef.current?.calibrateMagneticBaseline()
+            }
+            onRequestMotionPermission={() =>
+              sensorEngineRef.current?.requestMotionPermission() ?? Promise.resolve(false)
+            }
+          />
+        )}
+
+        {activeTab === 'evidence' && (
+          <EvidenceModule
+            activeSession={activeSession}
+            sessions={sessions}
+            selectedSessionId={selectedSessionId}
+            onSelectSession={(id) => setSelectedSessionId(id)}
+            evidenceList={evidenceList}
+            highlightedEvidenceId={highlightedEvidenceId}
+            onDeleteSession={handleDeleteSession}
+            onAddIndependentReview={handleAddIndependentReview}
+          />
+        )}
+
+        {activeTab === 'blindtest' && (
+          <BlindTestModule
+            activeSession={activeSession}
+            onLogEvidence={handleLogEvidence}
+          />
+        )}
+
+        {activeTab === 'settings' && (
+          <SettingsModule
+            hasAudioPermission={hasAudioPermission}
+            onRequestMicPermission={requestMicPermission}
+            hasGemini={hasGemini}
+            onClearAllData={handleClearAllData}
+            availableMics={availableMics}
+            selectedMicId={selectedMicId}
+            onSelectMic={(id) => {
+              setSelectedMicId(id);
+              audioEngineRef.current?.startMicrophone(id);
+            }}
+          />
+        )}
+      </main>
+
+      {/* Footer / Status bar */}
+      <footer className="border-t border-slate-900 bg-[#060a13] py-2 px-4 text-center text-[10px] font-mono text-slate-500 flex flex-col sm:flex-row justify-between items-center gap-1">
+        <div>
+          <span>FROC SOBRENATURAL CAÇA FANTASMA v1.0</span> — Protocolo Científico de Investigação
+        </div>
+        <div className="flex items-center gap-3">
+          <span>Armazenamento: IndexedDB Seguro</span>
+          <span>IA: {hasGemini ? 'Gemini 3.8 Flash' : 'Motor Local'}</span>
+        </div>
+      </footer>
+
+      {/* Modals for Auth and Wallet */}
+      <AuthModal
+        isOpen={isAuthModalOpen}
+        onClose={() => setIsAuthModalOpen(false)}
+      />
+
+      <WalletModal
+        isOpen={isWalletModalOpen}
+        onClose={() => setIsWalletModalOpen(false)}
+      />
+    </div>
+  );
+}
