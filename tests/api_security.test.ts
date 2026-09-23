@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import request from 'http';
-import { app } from '../src/app';
+import { app } from '../src/serverApp';
 
 // Helper to make test HTTP request to express app without listening on public port
 function callApp(options: { method: string; path: string; headers?: Record<string, string>; body?: any }): Promise<{ status: number; headers: any; body: any; text: string }> {
@@ -119,3 +119,35 @@ test('6. Security: Webhook rejects unverified signatures', async () => {
   assert.equal(res.status, 401);
   assert.match(res.body.error, /Assinatura inválida/);
 });
+
+test('7. Security: User orders endpoint /api/user/orders rejects anonymous request with 401', async () => {
+  const res = await callApp({
+    method: 'GET',
+    path: '/api/user/orders',
+  });
+  assert.equal(res.status, 401);
+});
+
+test('8. Security: Admin overview /api/admin/overview rejects anonymous request with 401', async () => {
+  const res = await callApp({
+    method: 'GET',
+    path: '/api/admin/overview',
+  });
+  assert.equal(res.status, 401);
+});
+
+test('9. Security: Admin adjustment /api/admin/credits/adjust rejects anonymous request with 401', async () => {
+  const res = await callApp({
+    method: 'POST',
+    path: '/api/admin/credits/adjust',
+    body: {
+      targetUid: 'user-xyz',
+      action: 'grant',
+      amount: 50,
+      reason: 'Teste sem autenticação',
+      idempotencyKey: 'idemp-test-anon',
+    },
+  });
+  assert.equal(res.status, 401);
+});
+

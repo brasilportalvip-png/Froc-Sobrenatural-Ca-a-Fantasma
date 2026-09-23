@@ -1,4 +1,4 @@
-export type ModuleTab = 'communication' | 'vision' | 'ouija' | 'sensors' | 'evidence' | 'blindtest' | 'settings';
+export type ModuleTab = 'communication' | 'vision' | 'ouija' | 'sensors' | 'evidence' | 'blindtest' | 'settings' | 'painel' | 'admin';
 
 export interface Session {
   id: string;
@@ -146,7 +146,9 @@ export interface UserWallet {
   reserved: number; // Saldo temporariamente retido durante processamento
   promotionalGranted: number; // Total promocional recebido (ex: 25 bônus)
   purchasedTotal: number; // Total de créditos comprados
+  manualGrantedTotal?: number; // Total de créditos concedidos manualmente pela administração
   spentTotal: number; // Total de créditos efetivamente consumidos
+  debtAmount?: number; // Dívida ativa se houver estorno de créditos já consumidos
   version: number; // Versão de controle de concorrência
   updatedAt: number;
 }
@@ -158,8 +160,43 @@ export interface LedgerEntry {
   amount: number; // Positivo ou negativo (ex: +25, -5, +5)
   balanceAfter: number;
   description: string;
-  referenceId?: string; // ID da consulta, requestId ou orderId
+  referenceId?: string; // ID da consulta, requestId, orderId ou adminOpId
+  adminUid?: string; // UID do administrador que executou a ação (se aplicável)
+  reason?: string;
+  category?: 'courtesy' | 'support' | 'correction' | 'other';
   timestamp: number;
+}
+
+export interface AdminAdjustmentReceipt {
+  operationId: string;
+  targetUid: string;
+  targetEmail?: string;
+  adminUid: string;
+  action: 'grant' | 'revoke';
+  amount: number;
+  reason: string;
+  category: 'courtesy' | 'support' | 'correction' | 'other';
+  previousBalance: number;
+  balanceAfter: number;
+  timestamp: number;
+  idempotencyKey: string;
+}
+
+export interface AdminDashboardOverview {
+  totalUsers: number;
+  totalCreditsInCirculation: number;
+  totalPurchasedCredits: number;
+  totalSpentCredits: number;
+  totalReservedCredits: number;
+  totalConsultationsCompleted: number;
+  totalConsultationsFailed: number;
+  ordersCountByStatus: Record<string, number>;
+  apiHealth: {
+    status: string;
+    geminiOnline: boolean;
+    mercadoPagoOnline: boolean;
+    adminConfigured: boolean;
+  };
 }
 
 export interface CreditPackage {

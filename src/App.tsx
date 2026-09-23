@@ -25,6 +25,8 @@ import { SettingsModule } from './components/SettingsModule';
 import { PWAInstallButton, OfflineIndicator } from './components/PWAInstallButton';
 import { AuthModal } from './components/AuthModal';
 import { WalletModal } from './components/WalletModal';
+import { UserPanel } from './components/UserPanel';
+import { AdminPanel } from './components/AdminPanel';
 import { useAuth } from './services/AuthContext';
 import {
   Radio,
@@ -39,10 +41,12 @@ import {
   Sparkles,
   User,
   Wallet,
+  LayoutDashboard,
+  ShieldAlert,
 } from 'lucide-react';
 
 export default function App() {
-  const { user, wallet, getIdToken, refreshWallet } = useAuth();
+  const { user, wallet, isAdmin, getIdToken, refreshWallet } = useAuth();
   const [activeTab, setActiveTab] = useState<ModuleTab>('communication');
 
   // Modals state
@@ -109,6 +113,26 @@ export default function App() {
 
   // Initialize Engines & Storage
   useEffect(() => {
+    // Sincronizar rota da URL inicial (/painel ou /admin)
+    const currentPath = window.location.pathname.toLowerCase();
+    if (currentPath === '/painel' || currentPath === '/painel/' || currentPath === '/panel') {
+      setActiveTab('painel');
+    } else if (currentPath === '/admin' || currentPath === '/admin/') {
+      setActiveTab('admin');
+    }
+
+    const handlePopState = () => {
+      const p = window.location.pathname.toLowerCase();
+      if (p === '/painel' || p === '/painel/' || p === '/panel') {
+        setActiveTab('painel');
+      } else if (p === '/admin' || p === '/admin/') {
+        setActiveTab('admin');
+      } else {
+        setActiveTab('communication');
+      }
+    };
+    window.addEventListener('popstate', handlePopState);
+
     audioEngineRef.current = new AudioEngine();
     sensorEngineRef.current = new SensorEngine();
 
@@ -696,6 +720,42 @@ export default function App() {
               <span className="text-[10px] text-slate-400 hidden sm:inline">CRÉDITOS</span>
             </button>
 
+            {/* Painel do Usuário */}
+            <button
+              onClick={() => {
+                setActiveTab('painel');
+                window.history.pushState({}, '', '/painel');
+              }}
+              className={`flex items-center gap-1.5 px-2.5 py-1 rounded text-xs font-mono border transition cursor-pointer ${
+                activeTab === 'painel'
+                  ? 'bg-cyan-950 border-cyan-400 text-cyan-200 shadow'
+                  : 'bg-slate-900 border-slate-700 text-slate-300 hover:border-cyan-500'
+              }`}
+              title="Abrir Painel do Investigador"
+            >
+              <LayoutDashboard className="w-3.5 h-3.5 text-cyan-400" />
+              <span className="hidden sm:inline">PAINEL</span>
+            </button>
+
+            {/* Painel Admin (visível quando reconhecido ou sob acesso direto /admin) */}
+            {isAdmin && (
+              <button
+                onClick={() => {
+                  setActiveTab('admin');
+                  window.history.pushState({}, '', '/admin');
+                }}
+                className={`flex items-center gap-1.5 px-2.5 py-1 rounded text-xs font-mono border transition cursor-pointer ${
+                  activeTab === 'admin'
+                    ? 'bg-emerald-950 border-emerald-400 text-emerald-200 shadow'
+                    : 'bg-emerald-950/40 border-emerald-700/60 text-emerald-300 hover:border-emerald-400'
+                }`}
+                title="Painel de Administração do Sistema"
+              >
+                <ShieldAlert className="w-3.5 h-3.5 text-emerald-400" />
+                <span className="hidden sm:inline">ADMIN</span>
+              </button>
+            )}
+
             {/* User Account Button */}
             <button
               onClick={() => setIsAuthModalOpen(true)}
@@ -833,6 +893,27 @@ export default function App() {
               setSelectedMicId(id);
               audioEngineRef.current?.startMicrophone(id);
             }}
+          />
+        )}
+
+        {activeTab === 'painel' && (
+          <UserPanel
+            onBackToApp={() => {
+              setActiveTab('communication');
+              window.history.pushState({}, '', '/');
+            }}
+            onOpenAuth={() => setIsAuthModalOpen(true)}
+            onOpenWalletModal={() => setIsWalletModalOpen(true)}
+          />
+        )}
+
+        {activeTab === 'admin' && (
+          <AdminPanel
+            onBackToApp={() => {
+              setActiveTab('communication');
+              window.history.pushState({}, '', '/');
+            }}
+            onOpenAuth={() => setIsAuthModalOpen(true)}
           />
         )}
       </main>

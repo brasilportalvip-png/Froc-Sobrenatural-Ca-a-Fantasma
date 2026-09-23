@@ -189,6 +189,17 @@ export const CommunicationModule: React.FC<Props> = ({
       });
 
       const data = await res.json();
+      if (!res.ok) {
+        setAssistantMessages((prev) => [
+          ...prev,
+          {
+            role: 'assistant',
+            content: data.error || 'Falha ao consultar o assistente de IA.',
+          },
+        ]);
+        return;
+      }
+
       setAssistantMessages((prev) => [
         ...prev,
         {
@@ -197,6 +208,11 @@ export const CommunicationModule: React.FC<Props> = ({
           provider: data.provider,
         },
       ]);
+
+      // Se consumiu créditos pagos, atualizar a carteira
+      if (data.isFreeTier === false) {
+        refreshWallet();
+      }
     } catch {
       setAssistantMessages((prev) => [
         ...prev,

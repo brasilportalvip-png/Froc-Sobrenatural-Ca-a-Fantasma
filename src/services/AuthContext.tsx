@@ -19,6 +19,7 @@ interface AuthContextType {
   wallet: UserWallet | null;
   ledger: LedgerEntry[];
   packages: CreditPackage[];
+  isAdmin: boolean;
   refreshWallet: () => Promise<void>;
   claimFreeBonus: () => Promise<{ success: boolean; message: string }>;
   loginWithEmail: (email: string, pass: string) => Promise<void>;
@@ -38,6 +39,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const [wallet, setWallet] = useState<UserWallet | null>(null);
   const [ledger, setLedger] = useState<LedgerEntry[]>([]);
   const [packages, setPackages] = useState<CreditPackage[]>([]);
+  const [isAdmin, setIsAdmin] = useState(false);
 
   // Get current Bearer ID token for authorized API calls
   const getIdToken = async (): Promise<string | null> => {
@@ -46,6 +48,32 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       return await auth.currentUser.getIdToken(true);
     } catch {
       return null;
+    }
+  };
+
+  // Check admin role from secure server route
+  const checkAdminRole = async () => {
+    if (!auth.currentUser) {
+      setIsAdmin(false);
+      return;
+    }
+    try {
+      const token = await getIdToken();
+      if (!token) {
+        setIsAdmin(false);
+        return;
+      }
+      const res = await fetch('/api/user/role', {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setIsAdmin(!!data.isAdmin);
+      } else {
+        setIsAdmin(false);
+      }
+    } catch {
+      setIsAdmin(false);
     }
   };
 
@@ -156,9 +184,11 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       setLoading(false);
       if (currentUser) {
         await refreshWallet();
+        await checkAdminRole();
       } else {
         setWallet(null);
         setLedger([]);
+        setIsAdmin(false);
       }
     });
 
@@ -173,6 +203,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         wallet,
         ledger,
         packages,
+        isAdmin,
         refreshWallet,
         claimFreeBonus,
         loginWithEmail,

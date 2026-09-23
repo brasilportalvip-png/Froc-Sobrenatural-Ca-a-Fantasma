@@ -68,6 +68,10 @@ service cloud.firestore {
       allow read, write: if false;
     }
 
+    match /adminAdjustmentIdempotency/{keyId} {
+      allow read, write: if false;
+    }
+
     match /systemConfig/{configId} {
       allow read: if true; // Public catalog of packages & prices
       allow write: if false;

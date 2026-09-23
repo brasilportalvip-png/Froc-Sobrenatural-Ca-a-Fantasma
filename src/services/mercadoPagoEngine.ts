@@ -219,7 +219,7 @@ export async function processMercadoPagoWebhook(paymentId: string): Promise<{ su
   const paymentEventRef = adminDb.collection('paymentEvents').doc(`mp_${paymentId}_${status}`);
 
   return await adminDb.runTransaction(async (t: any) => {
-    // Deduplicação de evento
+    // 1. TODAS AS LEITURAS ANTES DE QUALQUER ESCRITA (Regra obrigatória do Firestore)
     const eventSnap = await t.get(paymentEventRef);
     if (eventSnap.exists) {
       return { success: true, message: 'Evento já processado anteriormente.' };
@@ -235,6 +235,9 @@ export async function processMercadoPagoWebhook(paymentId: string): Promise<{ su
     const walletRef = adminDb.collection('wallets').doc(uid);
     const ledgerRef = walletRef.collection('ledger').doc();
 
+    const walletSnap = await t.get(walletRef);
+
+    // 2. TODAS AS ESCRITAS (t.set, t.update) APÓS O TÉRMINO DAS LEITURAS
     t.set(paymentEventRef, {
       paymentId,
       orderId,
@@ -244,9 +247,9 @@ export async function processMercadoPagoWebhook(paymentId: string): Promise<{ su
     });
 
     if (status === 'approved' && order.status !== 'approved') {
-      const walletSnap = await t.get(walletRef);
+      const walletExists = walletSnap.exists;
       let wallet: UserWallet;
-      if (!walletSnap.exists) {
+      if (!walletExists) {
         wallet = {
           uid,
           balance: 0,
@@ -264,12 +267,21 @@ export async function processMercadoPagoWebhook(paymentId: string): Promise<{ su
       const newBalance = wallet.balance + order.credits;
       const newPurchased = (wallet.purchasedTotal || 0) + order.credits;
 
-      t.update(walletRef, {
-        balance: newBalance,
-        purchasedTotal: newPurchased,
-        version: wallet.version + 1,
-        updatedAt: Date.now(),
-      });
+      if (!walletExists) {
+        t.set(walletRef, {
+          ...wallet,
+          balance: newBalance,
+          purchasedTotal: newPurchased,
+          updatedAt: Date.now(),
+        });
+      } else {
+        t.update(walletRef, {
+          balance: newBalance,
+          purchasedTotal: newPurchased,
+          version: (wallet.version || 1) + 1,
+          updatedAt: Date.now(),
+        });
+      }
 
       t.update(orderRef, {
         status: 'approved',
