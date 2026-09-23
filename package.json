@@ -7,7 +7,7 @@
     "postinstall": "node scripts/patch-pwa.mjs",
     "dev": "tsx server.ts",
     "build:client": "vite build",
-    "build:api": "esbuild ./src/apiEntry.ts --bundle --platform=node --target=node20 --format=esm --packages=external --outfile=api/index.js",
+    "build:api": "node scripts/build-api.mjs",
     "build": "vite build && npm run build:api",
     "start": "NODE_ENV=production tsx server.ts",
     "preview": "vite preview",
