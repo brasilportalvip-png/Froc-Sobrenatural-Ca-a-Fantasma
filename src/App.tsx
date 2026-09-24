@@ -43,10 +43,12 @@ import {
   Wallet,
   LayoutDashboard,
   ShieldAlert,
+  LogOut,
+  CheckCircle,
 } from 'lucide-react';
 
 export default function App() {
-  const { user, wallet, isAdmin, getIdToken, refreshWallet } = useAuth();
+  const { user, profile, wallet, isAdmin, getIdToken, refreshWallet, logoutUser } = useAuth();
   const [activeTab, setActiveTab] = useState<ModuleTab>('communication');
 
   // Modals state
@@ -769,20 +771,36 @@ export default function App() {
               </button>
             )}
 
-            {/* User Account Button */}
-            <button
-              onClick={() => setIsAuthModalOpen(true)}
-              className={`flex items-center gap-1.5 px-2.5 py-1 rounded text-xs font-mono border transition cursor-pointer ${
-                user
-                  ? 'bg-slate-900 border-slate-700 text-slate-200 hover:border-cyan-500'
-                  : 'bg-cyan-950 border-cyan-500/80 text-cyan-300 hover:bg-cyan-900'
-              }`}
-            >
-              <User className="w-3.5 h-3.5" />
-              <span className="max-w-[100px] truncate hidden sm:inline">
-                {user ? user.email?.split('@')[0] : 'Entrar'}
-              </span>
-            </button>
+            {/* User Account / Identity Display */}
+            {user ? (
+              <div className="flex items-center gap-1 bg-slate-900/90 border border-cyan-500/40 rounded px-1.5 py-0.5">
+                <button
+                  onClick={() => setIsAuthModalOpen(true)}
+                  className="flex items-center gap-1.5 px-1.5 py-0.5 text-xs font-mono text-slate-200 hover:text-cyan-300 transition cursor-pointer"
+                  title={`Usuário conectado: ${profile?.displayName || user.displayName || user.email}`}
+                >
+                  <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" title="Sessão Ativa / Conectado" />
+                  <span className="max-w-[120px] truncate text-[11px] font-semibold">
+                    {profile?.displayName || user.displayName || user.email?.split('@')[0]}
+                  </span>
+                </button>
+                <button
+                  onClick={logoutUser}
+                  className="p-1 text-slate-400 hover:text-rose-300 hover:bg-rose-950/40 rounded transition cursor-pointer"
+                  title="Encerrar Sessão (Sair)"
+                >
+                  <LogOut className="w-3.5 h-3.5" />
+                </button>
+              </div>
+            ) : (
+              <button
+                onClick={() => setIsAuthModalOpen(true)}
+                className="flex items-center gap-1.5 bg-gradient-to-r from-cyan-900 to-blue-900 hover:from-cyan-800 hover:to-blue-800 border border-cyan-400/60 text-cyan-200 px-3 py-1 rounded text-xs font-mono font-bold cursor-pointer transition shadow"
+              >
+                <User className="w-3.5 h-3.5 text-cyan-300" />
+                <span>Entrar / Cadastrar</span>
+              </button>
+            )}
 
             <PWAInstallButton />
           </div>

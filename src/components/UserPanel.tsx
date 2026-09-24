@@ -37,6 +37,7 @@ export const UserPanel: React.FC<UserPanelProps> = ({
 }) => {
   const {
     user,
+    profile,
     wallet,
     ledger,
     packages,
@@ -676,8 +677,20 @@ export const UserPanel: React.FC<UserPanelProps> = ({
 
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 text-xs font-mono">
               <div className="bg-[#081120] p-3 rounded-lg border border-slate-800">
+                <span className="text-slate-400 block text-[10px]">NOME DE EXIBIÇÃO</span>
+                <span className="text-slate-200 font-bold">
+                  {profile?.displayName || user.displayName || 'Não configurado'}
+                </span>
+              </div>
+              <div className="bg-[#081120] p-3 rounded-lg border border-slate-800">
                 <span className="text-slate-400 block text-[10px]">E-MAIL CADASTRADO</span>
                 <span className="text-slate-200 font-bold">{user.email}</span>
+              </div>
+              <div className="bg-[#081120] p-3 rounded-lg border border-slate-800">
+                <span className="text-slate-400 block text-[10px]">PROVEDOR DE ACESSO</span>
+                <span className="text-cyan-300 font-bold uppercase">
+                  {profile?.authProvider || user.providerData?.[0]?.providerId || 'password'}
+                </span>
               </div>
               <div className="bg-[#081120] p-3 rounded-lg border border-slate-800">
                 <span className="text-slate-400 block text-[10px]">STATUS DE VERIFICAÇÃO</span>
@@ -688,6 +701,10 @@ export const UserPanel: React.FC<UserPanelProps> = ({
                 >
                   {user.emailVerified ? '✓ Verificado' : '⚠ Verificação Pendente'}
                 </span>
+              </div>
+              <div className="bg-[#081120] p-3 rounded-lg border border-slate-800 sm:col-span-2">
+                <span className="text-slate-400 block text-[10px]">IDENTIFICADOR FIRESTORE (UID)</span>
+                <span className="text-slate-300 text-[11px] select-all font-mono">{user.uid}</span>
               </div>
             </div>
 

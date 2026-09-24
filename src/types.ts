@@ -224,6 +224,18 @@ export interface OrderItem {
   errorReason?: string;
 }
 
+export interface UserProfile {
+  uid: string;
+  email: string | null;
+  displayName: string | null;
+  photoURL: string | null;
+  createdAt: number;
+  updatedAt: number;
+  lastLoginAt: number;
+  authProvider: string;
+  emailVerified: boolean;
+}
+
 export interface ConsultationTransaction {
   id: string;
   requestId: string;

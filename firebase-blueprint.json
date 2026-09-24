@@ -1,0 +1,68 @@
+{
+  "entities": {
+    "users": {
+      "title": "UserProfile",
+      "description": "Perfil de usuário com informações cadastrais básicas e seguras",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "description": "Firebase Auth UID" },
+        "email": { "type": "string", "format": "email", "description": "E-mail do usuário" },
+        "displayName": { "type": "string", "description": "Nome de exibição" },
+        "photoURL": { "type": "string", "description": "Foto de perfil" },
+        "createdAt": { "type": "number", "description": "Timestamp de criação" },
+        "updatedAt": { "type": "number", "description": "Timestamp de última atualização" },
+        "lastLoginAt": { "type": "number", "description": "Timestamp de último login" },
+        "authProvider": { "type": "string", "description": "Provedor de autenticação (password, google.com)" },
+        "emailVerified": { "type": "boolean", "description": "Indicador de verificação de e-mail" }
+      },
+      "required": ["uid"]
+    },
+    "wallets": {
+      "title": "UserWallet",
+      "description": "Carteira de créditos do usuário gerenciada exclusivamente pelo backend",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string" },
+        "balance": { "type": "number" },
+        "reserved": { "type": "number" },
+        "promotionalGranted": { "type": "number" },
+        "purchasedTotal": { "type": "number" },
+        "manualGrantedTotal": { "type": "number" },
+        "spentTotal": { "type": "number" },
+        "debtAmount": { "type": "number" },
+        "version": { "type": "number" },
+        "updatedAt": { "type": "number" }
+      },
+      "required": ["uid", "balance"]
+    },
+    "ledger": {
+      "title": "LedgerEntry",
+      "description": "Extrato de transações e auditoria de créditos",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "uid": { "type": "string" },
+        "type": { "type": "string" },
+        "amount": { "type": "number" },
+        "balanceAfter": { "type": "number" },
+        "description": { "type": "string" },
+        "timestamp": { "type": "number" }
+      },
+      "required": ["id", "uid", "type", "amount", "timestamp"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": "users",
+      "description": "Coleção de perfis de usuários autenticados"
+    },
+    "/wallets/{userId}": {
+      "schema": "wallets",
+      "description": "Carteiras de saldo e créditos"
+    },
+    "/wallets/{userId}/ledger/{entryId}": {
+      "schema": "ledger",
+      "description": "Extrato e histórico transacional de cada carteira"
+    }
+  }
+}

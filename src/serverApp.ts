@@ -19,6 +19,7 @@ import {
 } from './services/mercadoPagoEngine';
 import { executeGeminiWithFallback } from './services/aiOrchestrator';
 import { enforceUserRateLimit } from './services/rateLimit';
+import { ensureUserProfileServer, getUserProfileServer } from './services/userProfileAdmin';
 
 dotenv.config();
 
@@ -161,6 +162,12 @@ app.get('/api/status', (_req: Request, res: Response) => {
 app.get('/api/wallet', authenticateFirebaseUser, async (req: any, res: Response) => {
   try {
     const uid = req.user.uid;
+
+    // Sincronizar e assegurar documento users/{uid} no Firestore de forma não-bloqueante
+    ensureUserProfileServer(req.user).catch((syncErr) => {
+      console.warn('[Wallet] Aviso na sincronização do perfil do usuário:', syncErr?.message);
+    });
+
     const wallet = await getOrCreateWallet(uid);
 
     const ledgerSnap = await adminDb
@@ -596,6 +603,26 @@ app.get('/api/user/role', authenticateFirebaseUser, async (req: any, res: Respon
   });
 });
 
+// Sincronizar ou criar documento users/{uid} com identidade validada por token Bearer
+app.post('/api/user/sync-profile', authenticateFirebaseUser, async (req: any, res: Response) => {
+  try {
+    const profile = await ensureUserProfileServer(req.user);
+    res.json({ success: true, profile });
+  } catch (err: any) {
+    return handleDbError(err, res, 'Erro ao sincronizar perfil de usuário no servidor.');
+  }
+});
+
+// Obter documento users/{uid} do usuário autenticado
+app.get('/api/user/profile', authenticateFirebaseUser, async (req: any, res: Response) => {
+  try {
+    const profile = (await getUserProfileServer(req.user.uid)) || (await ensureUserProfileServer(req.user));
+    res.json(profile);
+  } catch (err: any) {
+    return handleDbError(err, res, 'Erro ao recuperar perfil de usuário.');
+  }
+});
+
 // =========================================================================
 // 10. PAINEL DO ADMINISTRADOR (/api/admin/*)
 // =========================================================================
@@ -669,21 +696,42 @@ app.get('/api/admin/overview', requireAdmin, async (_req: any, res: Response) =>
   }
 });
 
-// Listar Usuários e Carteiras (Admin)
+// Listar Usuários e Carteiras (Admin com enriquecimento de perfis)
 app.get('/api/admin/users', requireAdmin, async (req: any, res: Response) => {
   try {
     const search = (req.query.search as string || '').toLowerCase().trim();
     const requestedLimit = Number(req.query.limit || 30);
     const limit = Number.isInteger(requestedLimit) ? Math.max(1, Math.min(requestedLimit, 100)) : 30;
 
-    const walletsSnap = await adminDb.collection('wallets').limit(limit).get();
+    const [walletsSnap, profilesSnap] = await Promise.all([
+      adminDb.collection('wallets').limit(limit).get(),
+      adminDb.collection('users').limit(limit).get(),
+    ]);
+
+    const profileMap = new Map<string, any>();
+    profilesSnap.forEach((doc: any) => {
+      profileMap.set(doc.id, doc.data());
+    });
+
     const users: any[] = [];
 
     walletsSnap.forEach((doc: any) => {
       const data = doc.data();
-      if (!search || doc.id.toLowerCase().includes(search)) {
+      const prof = profileMap.get(doc.id) || {};
+      const matchesSearch =
+        !search ||
+        doc.id.toLowerCase().includes(search) ||
+        (prof.email && prof.email.toLowerCase().includes(search)) ||
+        (prof.displayName && prof.displayName.toLowerCase().includes(search));
+
+      if (matchesSearch) {
         users.push({
           uid: doc.id,
+          email: prof.email || null,
+          displayName: prof.displayName || null,
+          photoURL: prof.photoURL || null,
+          authProvider: prof.authProvider || 'password',
+          emailVerified: !!prof.emailVerified,
           balance: data.balance || 0,
           reserved: data.reserved || 0,
           promotionalGranted: data.promotionalGranted || 0,
