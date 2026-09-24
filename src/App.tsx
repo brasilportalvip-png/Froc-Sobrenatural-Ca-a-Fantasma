@@ -27,6 +27,10 @@ import { AuthModal } from './components/AuthModal';
 import { WalletModal } from './components/WalletModal';
 import { UserPanel } from './components/UserPanel';
 import { AdminPanel } from './components/AdminPanel';
+import { PrivacyPolicy } from './components/PrivacyPolicy';
+import { TermsOfUse } from './components/TermsOfUse';
+import { NotFoundPage } from './components/NotFoundPage';
+import { AppFooter } from './components/AppFooter';
 import { useAuth } from './services/AuthContext';
 import {
   Radio,
@@ -115,23 +119,21 @@ export default function App() {
 
   // Initialize Engines & Storage
   useEffect(() => {
-    // Sincronizar rota da URL inicial (/painel ou /admin)
-    const currentPath = window.location.pathname.toLowerCase();
-    if (currentPath === '/painel' || currentPath === '/painel/' || currentPath === '/panel') {
-      setActiveTab('painel');
-    } else if (currentPath === '/admin' || currentPath === '/admin/') {
-      setActiveTab('admin');
-    }
+    // Sincronizar rota da URL inicial
+    const resolveTabFromPath = (pathname: string): ModuleTab => {
+      const p = pathname.toLowerCase().replace(/\/+$/, '') || '/';
+      if (p === '/painel' || p === '/panel') return 'painel';
+      if (p === '/admin') return 'admin';
+      if (p === '/politica-de-privacidade' || p === '/privacidade' || p === '/privacy') return 'privacy';
+      if (p === '/termos-de-uso' || p === '/termos' || p === '/terms') return 'terms';
+      if (p === '/' || p === '') return 'communication';
+      return 'notfound';
+    };
+
+    setActiveTab(resolveTabFromPath(window.location.pathname));
 
     const handlePopState = () => {
-      const p = window.location.pathname.toLowerCase();
-      if (p === '/painel' || p === '/painel/' || p === '/panel') {
-        setActiveTab('painel');
-      } else if (p === '/admin' || p === '/admin/') {
-        setActiveTab('admin');
-      } else {
-        setActiveTab('communication');
-      }
+      setActiveTab(resolveTabFromPath(window.location.pathname));
     };
     window.addEventListener('popstate', handlePopState);
 
@@ -948,7 +950,53 @@ export default function App() {
             onOpenAuth={() => setIsAuthModalOpen(true)}
           />
         )}
+
+        {activeTab === 'privacy' && (
+          <PrivacyPolicy
+            onBackToApp={() => {
+              setActiveTab('communication');
+              window.history.pushState({}, '', '/');
+            }}
+          />
+        )}
+
+        {activeTab === 'terms' && (
+          <TermsOfUse
+            onBackToApp={() => {
+              setActiveTab('communication');
+              window.history.pushState({}, '', '/');
+            }}
+          />
+        )}
+
+        {activeTab === 'notfound' && (
+          <NotFoundPage
+            onBackToApp={() => {
+              setActiveTab('communication');
+              window.history.pushState({}, '', '/');
+            }}
+          />
+        )}
       </main>
+
+      {/* Footer Legal e Institucional */}
+      <AppFooter
+        onNavigate={(route) => {
+          if (route === 'communication') {
+            setActiveTab('communication');
+            window.history.pushState({}, '', '/');
+          } else if (route === 'painel') {
+            setActiveTab('painel');
+            window.history.pushState({}, '', '/painel');
+          } else if (route === 'privacy') {
+            setActiveTab('privacy');
+            window.history.pushState({}, '', '/politica-de-privacidade');
+          } else if (route === 'terms') {
+            setActiveTab('terms');
+            window.history.pushState({}, '', '/termos-de-uso');
+          }
+        }}
+      />
 
       {/* Footer / Status bar */}
       <footer className="border-t border-slate-900 bg-[#060a13] py-2 px-4 text-center text-[10px] font-mono text-slate-500 flex flex-col sm:flex-row justify-between items-center gap-1">

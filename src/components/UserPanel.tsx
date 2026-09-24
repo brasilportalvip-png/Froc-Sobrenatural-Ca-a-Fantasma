@@ -38,6 +38,8 @@ export const UserPanel: React.FC<UserPanelProps> = ({
   const {
     user,
     profile,
+    profilePersisted,
+    profileSyncError,
     wallet,
     ledger,
     packages,
@@ -266,6 +268,29 @@ export const UserPanel: React.FC<UserPanelProps> = ({
       {/* 1. VISÃO GERAL */}
       {activeSection === 'overview' && (
         <div className="space-y-6">
+          {/* Alerta de Sincronização de Perfil se não persistido */}
+          {!profilePersisted && (
+            <div className="bg-amber-950/40 border border-amber-500/50 rounded-xl p-4 flex items-center justify-between gap-3">
+              <div className="flex items-center gap-3">
+                <AlertTriangle className="w-5 h-5 text-amber-400 shrink-0" />
+                <div>
+                  <h4 className="text-xs font-bold font-mono text-amber-200">
+                    Sincronização de Perfil Pendente
+                  </h4>
+                  <p className="text-[11px] text-amber-300/80">
+                    {profileSyncError || 'O perfil está ativo em sessão temporária e aguardando confirmação no banco de dados Firestore.'}
+                  </p>
+                </div>
+              </div>
+              <button
+                onClick={() => reloadUser()}
+                className="px-3 py-1.5 bg-amber-900/60 hover:bg-amber-800 text-amber-200 text-xs font-mono rounded border border-amber-500/50 cursor-pointer shrink-0"
+              >
+                Tentar Sincronizar
+              </button>
+            </div>
+          )}
+
           {/* Alerta de Verificação de E-mail se pendente */}
           {!user.emailVerified && (
             <div className="bg-amber-950/30 border border-amber-500/40 rounded-xl p-4 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
@@ -700,6 +725,16 @@ export const UserPanel: React.FC<UserPanelProps> = ({
                   }
                 >
                   {user.emailVerified ? '✓ Verificado' : '⚠ Verificação Pendente'}
+                </span>
+              </div>
+              <div className="bg-[#081120] p-3 rounded-lg border border-slate-800">
+                <span className="text-slate-400 block text-[10px]">SINCRONIZAÇÃO DO PERFIL FIRESTORE</span>
+                <span
+                  className={
+                    profilePersisted ? 'text-emerald-400 font-bold' : 'text-amber-400 font-bold'
+                  }
+                >
+                  {profilePersisted ? '✓ Persistido e Ativo' : '⚠ Em memória (Pendente)'}
                 </span>
               </div>
               <div className="bg-[#081120] p-3 rounded-lg border border-slate-800 sm:col-span-2">

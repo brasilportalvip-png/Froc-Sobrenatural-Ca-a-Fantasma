@@ -1,4 +1,4 @@
-export type ModuleTab = 'communication' | 'vision' | 'ouija' | 'sensors' | 'evidence' | 'blindtest' | 'settings' | 'painel' | 'admin';
+export type ModuleTab = 'communication' | 'vision' | 'ouija' | 'sensors' | 'evidence' | 'blindtest' | 'settings' | 'painel' | 'admin' | 'privacy' | 'terms' | 'notfound';
 
 export interface Session {
   id: string;

@@ -360,6 +360,50 @@ export async function releaseConsultationCredits(uid: string, requestId: string,
 }
 
 /**
+ * Reconciliação em lote ou individual de reservas órfãs presas (TTL expirado sem commit).
+ * Libera os 5 créditos de volta para a carteira caso o processo tenha falhado silenciosamente.
+ */
+export async function reconcileStaleReservations(targetUid?: string): Promise<{ reconciledCount: number }> {
+  const STALE_THRESHOLD_MS = 5 * 60 * 1000; // 5 minutos
+  const cutoff = Date.now() - STALE_THRESHOLD_MS;
+
+  // Consulta sem índice composto: filtrar status e filtrar createdAt em memória
+  let query: any = adminDb.collection('consultations')
+    .where('status', '==', 'reserved')
+    .limit(50);
+
+  if (targetUid) {
+    query = adminDb.collection('consultations')
+      .where('uid', '==', targetUid)
+      .limit(30);
+  }
+
+  let reconciledCount = 0;
+  try {
+    const snap = await query.get();
+    for (const doc of snap.docs) {
+      const cData = doc.data();
+      if (cData.status === 'reserved' && (!cData.createdAt || cData.createdAt < cutoff)) {
+        try {
+          await releaseConsultationCredits(
+            cData.uid,
+            doc.id,
+            'Reconciliação automática: tempo de execução excedido (reserva órfã estornada)'
+          );
+          reconciledCount++;
+        } catch (err: any) {
+          console.warn(`[CreditEngine] Falha ao reconciliar reserva órfã ${doc.id}:`, err?.message);
+        }
+      }
+    }
+  } catch (err: any) {
+    console.warn('[CreditEngine] Falha ao executar consulta de reservas órfãs:', err?.message);
+  }
+
+  return { reconciledCount };
+}
+
+/**
  * Concessão ou Retirada Manual de Créditos pelo Administrador
  * - Transação atômica
  * - Leituras antes de escritas

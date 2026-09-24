@@ -11,17 +11,13 @@ service cloud.firestore {
       return isAuthenticated() && request.auth.uid == userId;
     }
 
-    // Users collection: users can read and write only their own basic profile info with strictly whitelisted keys
+    // Users collection: Authorized users can read only their own basic profile.
+    // Client writes are strictly forbidden (allow write: if false) to prevent tampering with
+    // emailVerified, authProvider, uid, createdAt, timestamps, or roles.
+    // All profile provisioning, mutations, and synchronization happen authoritatively via Firebase Admin SDK.
     match /users/{userId} {
       allow read: if isOwner(userId);
-      allow create: if isOwner(userId)
-        && request.resource.data.keys().hasOnly(['uid', 'email', 'displayName', 'photoURL', 'createdAt', 'updatedAt', 'lastLoginAt', 'authProvider', 'emailVerified'])
-        && request.resource.data.uid == userId;
-      allow update: if isOwner(userId) 
-        && request.resource.data.keys().hasOnly(['uid', 'email', 'displayName', 'photoURL', 'createdAt', 'updatedAt', 'lastLoginAt', 'authProvider', 'emailVerified'])
-        && !request.resource.data.diff(resource.data).affectedKeys().hasAny(['role', 'admin', 'saldo', 'balance', 'credits', 'creditos', 'debt', 'permissions', 'grants', 'isEligibleForFreeGrant', 'emailVerifiedManually', 'uid'])
-        && request.resource.data.uid == resource.data.uid;
-      allow delete: if false;
+      allow write: if false;
     }
 
     // Wallets: User can ONLY read their own wallet. Clients NEVER write balance, version, or reserved!

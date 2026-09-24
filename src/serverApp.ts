@@ -10,6 +10,7 @@ import {
   commitConsultationCredits,
   releaseConsultationCredits,
   adminAdjustCredits,
+  reconcileStaleReservations,
 } from './services/creditEngine';
 import {
   getCatalogPackages,
@@ -168,7 +169,18 @@ app.get('/api/wallet', authenticateFirebaseUser, async (req: any, res: Response)
       console.warn('[Wallet] Aviso na sincronização do perfil do usuário:', syncErr?.message);
     });
 
-    const wallet = await getOrCreateWallet(uid);
+    // Auto-reconciliação de eventuais reservas órfãs presas se a carteira apresentar créditos retidos
+    let wallet = await getOrCreateWallet(uid);
+    if (wallet.reserved && wallet.reserved > 0) {
+      try {
+        const { reconciledCount } = await reconcileStaleReservations(uid);
+        if (reconciledCount > 0) {
+          wallet = await getOrCreateWallet(uid);
+        }
+      } catch (recErr) {
+        console.warn('[Wallet] Aviso na reconciliação de reservas órfãs:', recErr);
+      }
+    }
 
     const ledgerSnap = await adminDb
       .collection('wallets')
@@ -630,7 +642,16 @@ app.get('/api/user/profile', authenticateFirebaseUser, async (req: any, res: Res
 // Visão Geral e Métricas Consolidadas do Admin
 app.get('/api/admin/overview', requireAdmin, async (_req: any, res: Response) => {
   try {
-    // 1. Wallets métricas
+    // 1. Contagem autoritativa de usuários: coleção users com fallback para auth
+    let totalRegisteredUsers = 0;
+    try {
+      const usersSnap = await adminDb.collection('users').limit(500).get();
+      totalRegisteredUsers = usersSnap.size;
+    } catch {
+      // Fallback
+    }
+
+    // 2. Wallets métricas
     const walletsSnap = await adminDb.collection('wallets').limit(500).get();
     let totalCreditsInCirculation = 0;
     let totalPurchasedCredits = 0;
@@ -645,7 +666,7 @@ app.get('/api/admin/overview', requireAdmin, async (_req: any, res: Response) =>
       totalReservedCredits += data.reserved || 0;
     });
 
-    // 2. Pedidos agrupados por status
+    // 3. Pedidos agrupados por status
     const ordersSnap = await adminDb.collection('orders').limit(500).get();
     const ordersCountByStatus: Record<string, number> = {
       created: 0,
@@ -661,11 +682,10 @@ app.get('/api/admin/overview', requireAdmin, async (_req: any, res: Response) =>
       ordersCountByStatus[status] = (ordersCountByStatus[status] || 0) + 1;
     });
 
-    // 3. Consultas
+    // 4. Consultas
     const consultationsSnap = await adminDb.collection('consultations').limit(500).get();
     let totalConsultationsCompleted = 0;
     let totalConsultationsFailed = 0;
-
     consultationsSnap.forEach((doc: any) => {
       const d = doc.data();
       if (d.status === 'completed') totalConsultationsCompleted++;
@@ -675,7 +695,9 @@ app.get('/api/admin/overview', requireAdmin, async (_req: any, res: Response) =>
     const envAdminUids = (process.env.ADMIN_UIDS || '').split(',').filter(Boolean);
 
     res.json({
-      totalUsers: walletsSnap.size,
+      totalUsers: Math.max(totalRegisteredUsers, walletsSnap.size),
+      walletsCount: walletsSnap.size,
+      registeredUsersCount: totalRegisteredUsers,
       metricsPartial: walletsSnap.size === 500 || ordersSnap.size === 500 || consultationsSnap.size === 500,
       totalCreditsInCirculation,
       totalPurchasedCredits,
@@ -696,55 +718,100 @@ app.get('/api/admin/overview', requireAdmin, async (_req: any, res: Response) =>
   }
 });
 
-// Listar Usuários e Carteiras (Admin com enriquecimento de perfis)
+// Listar Usuários e Carteiras (Admin - Usuários como entidade primária enriquecida com carteiras)
 app.get('/api/admin/users', requireAdmin, async (req: any, res: Response) => {
   try {
     const search = (req.query.search as string || '').toLowerCase().trim();
-    const requestedLimit = Number(req.query.limit || 30);
-    const limit = Number.isInteger(requestedLimit) ? Math.max(1, Math.min(requestedLimit, 100)) : 30;
+    const requestedLimit = Number(req.query.limit || 50);
+    const limit = Number.isInteger(requestedLimit) ? Math.max(1, Math.min(requestedLimit, 100)) : 50;
 
-    const [walletsSnap, profilesSnap] = await Promise.all([
-      adminDb.collection('wallets').limit(limit).get(),
-      adminDb.collection('users').limit(limit).get(),
-    ]);
+    // Se houver busca direta por UID específico
+    if (search && /^[a-zA-Z0-9:_-]{1,128}$/.test(search)) {
+      const [directUserSnap, directWalletSnap] = await Promise.all([
+        adminDb.collection('users').doc(search).get(),
+        adminDb.collection('wallets').doc(search).get(),
+      ]);
 
-    const profileMap = new Map<string, any>();
-    profilesSnap.forEach((doc: any) => {
-      profileMap.set(doc.id, doc.data());
+      if (directUserSnap.exists || directWalletSnap.exists) {
+        const uData = directUserSnap.data() || {};
+        const wData = directWalletSnap.data() || {};
+        return res.json([
+          {
+            uid: search,
+            email: uData.email || null,
+            displayName: uData.displayName || null,
+            photoURL: uData.photoURL || null,
+            authProvider: uData.authProvider || 'password',
+            emailVerified: !!uData.emailVerified,
+            balance: wData.balance || 0,
+            reserved: wData.reserved || 0,
+            promotionalGranted: wData.promotionalGranted || 0,
+            purchasedTotal: wData.purchasedTotal || 0,
+            manualGrantedTotal: wData.manualGrantedTotal || 0,
+            spentTotal: wData.spentTotal || 0,
+            debtAmount: wData.debtAmount || 0,
+            updatedAt: wData.updatedAt || uData.updatedAt || null,
+            hasWallet: directWalletSnap.exists,
+            hasProfile: directUserSnap.exists,
+          },
+        ]);
+      }
+    }
+
+    // Buscar lista primária de usuários (entidade base: users)
+    const usersSnap = await adminDb.collection('users').limit(150).get();
+    const walletsSnap = await adminDb.collection('wallets').limit(150).get();
+
+    const walletMap = new Map<string, any>();
+    walletsSnap.forEach((doc: any) => {
+      walletMap.set(doc.id, doc.data());
     });
 
-    const users: any[] = [];
+    const userMap = new Map<string, any>();
+    usersSnap.forEach((doc: any) => {
+      userMap.set(doc.id, doc.data());
+    });
 
-    walletsSnap.forEach((doc: any) => {
-      const data = doc.data();
-      const prof = profileMap.get(doc.id) || {};
+    // Unir todos os UIDs conhecidos (users + carteiras sem documento de profile ainda)
+    const allUids = new Set<string>([...userMap.keys(), ...walletMap.keys()]);
+    const mergedList: any[] = [];
+
+    allUids.forEach((uid) => {
+      const prof = userMap.get(uid) || {};
+      const wData = walletMap.get(uid) || {};
+
       const matchesSearch =
         !search ||
-        doc.id.toLowerCase().includes(search) ||
+        uid.toLowerCase().includes(search) ||
         (prof.email && prof.email.toLowerCase().includes(search)) ||
         (prof.displayName && prof.displayName.toLowerCase().includes(search));
 
       if (matchesSearch) {
-        users.push({
-          uid: doc.id,
+        mergedList.push({
+          uid,
           email: prof.email || null,
           displayName: prof.displayName || null,
           photoURL: prof.photoURL || null,
           authProvider: prof.authProvider || 'password',
           emailVerified: !!prof.emailVerified,
-          balance: data.balance || 0,
-          reserved: data.reserved || 0,
-          promotionalGranted: data.promotionalGranted || 0,
-          purchasedTotal: data.purchasedTotal || 0,
-          manualGrantedTotal: data.manualGrantedTotal || 0,
-          spentTotal: data.spentTotal || 0,
-          debtAmount: data.debtAmount || 0,
-          updatedAt: data.updatedAt,
+          balance: wData.balance || 0,
+          reserved: wData.reserved || 0,
+          promotionalGranted: wData.promotionalGranted || 0,
+          purchasedTotal: wData.purchasedTotal || 0,
+          manualGrantedTotal: wData.manualGrantedTotal || 0,
+          spentTotal: wData.spentTotal || 0,
+          debtAmount: wData.debtAmount || 0,
+          updatedAt: wData.updatedAt || prof.updatedAt || null,
+          hasWallet: walletMap.has(uid),
+          hasProfile: userMap.has(uid),
         });
       }
     });
 
-    res.json(users);
+    // Ordenação consistente
+    mergedList.sort((a, b) => (b.balance || 0) - (a.balance || 0));
+
+    res.json(mergedList.slice(0, limit));
   } catch (err: any) {
     return handleDbError(err, res, 'Erro ao listar usuários.');
   }

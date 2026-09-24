@@ -16,7 +16,7 @@ import {
 } from 'firebase/auth';
 import { auth } from './firebaseClient';
 import { UserWallet, LedgerEntry, CreditPackage, UserProfile } from '../types';
-import { syncUserProfileClient, fetchUserProfileClient } from './userProfileClient';
+import { syncUserProfileAuthoritative, fetchUserProfileClient } from './userProfileClient';
 
 // Configuração explícita da política de persistência local da sessão
 if (typeof window !== 'undefined') {
@@ -56,6 +56,8 @@ export function getFriendlyAuthErrorMessage(err: any): string {
 interface AuthContextType {
   user: User | null;
   profile: UserProfile | null;
+  profilePersisted: boolean;
+  profileSyncError: string | null;
   loading: boolean;
   wallet: UserWallet | null;
   ledger: LedgerEntry[];
@@ -79,6 +81,8 @@ const AuthContext = createContext<AuthContextType | null>(null);
 export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [user, setUser] = useState<User | null>(null);
   const [profile, setProfile] = useState<UserProfile | null>(null);
+  const [profilePersisted, setProfilePersisted] = useState(false);
+  const [profileSyncError, setProfileSyncError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [wallet, setWallet] = useState<UserWallet | null>(null);
   const [ledger, setLedger] = useState<LedgerEntry[]>([]);
@@ -95,6 +99,56 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
   };
 
+  // Sincronização centralizada do perfil de forma autoritativa no backend
+  const syncProfileForUser = async (currentUser: User, idToken: string | null) => {
+    if (!currentUser) {
+      setProfile(null);
+      setProfilePersisted(false);
+      setProfileSyncError(null);
+      return;
+    }
+
+    if (!idToken) {
+      // Tentativa de obter token fresco
+      try {
+        idToken = await currentUser.getIdToken(false);
+      } catch {
+        // Ignora falha de obtenção de token
+      }
+    }
+
+    if (!idToken) {
+      // Tentar apenas leitura local se não tiver token
+      const existing = await fetchUserProfileClient(currentUser.uid);
+      if (existing) {
+        setProfile(existing);
+        setProfilePersisted(true);
+        setProfileSyncError(null);
+      } else {
+        setProfileSyncError('Sessão sem token para sincronizar perfil.');
+      }
+      return;
+    }
+
+    const res = await syncUserProfileAuthoritative(currentUser, idToken);
+    if (res.persisted && res.profile) {
+      setProfile(res.profile);
+      setProfilePersisted(true);
+      setProfileSyncError(null);
+    } else {
+      // Tentar ler perfil previamente gravado no Firestore
+      const cached = await fetchUserProfileClient(currentUser.uid, idToken);
+      if (cached) {
+        setProfile(cached);
+        setProfilePersisted(true);
+        setProfileSyncError(res.error || 'Sincronização temporariamente indisponível');
+      } else {
+        setProfilePersisted(false);
+        setProfileSyncError(res.error || 'Falha ao persistir perfil no banco');
+      }
+    }
+  };
+
   // Check admin role from secure server route
   const checkAdminRole = async () => {
     if (!auth.currentUser) {
@@ -103,10 +157,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
     try {
       const token = await getIdToken();
-      if (!token) {
-        setIsAdmin(false);
-        return;
-      }
+      if (!token) return;
       const res = await fetch('/api/user/role', {
         headers: { Authorization: `Bearer ${token}` },
       });
@@ -121,35 +172,6 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
   };
 
-  // Fetch Wallet and Ledger from secure backend
-  const refreshWallet = async () => {
-    if (!auth.currentUser) {
-      setWallet(null);
-      setLedger([]);
-      return;
-    }
-
-    try {
-      const token = await getIdToken();
-      if (!token) return;
-
-      const res = await fetch('/api/wallet', {
-        headers: {
-          Authorization: `Bearer ${token}`,
-        },
-      });
-
-      if (res.ok) {
-        const data = await res.json();
-        setWallet(data.wallet);
-        setLedger(data.ledger || []);
-      }
-    } catch (err) {
-      console.warn('[AuthProvider] Erro ao sincronizar carteira:', err);
-    }
-  };
-
-  // Fetch Packages catalog
   const fetchPackages = async () => {
     try {
       const res = await fetch('/api/packages');
@@ -158,35 +180,53 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         setPackages(data);
       }
     } catch (err) {
-      console.warn('[AuthProvider] Erro ao buscar pacotes:', err);
+      console.warn('[AuthContext] Falha ao carregar pacotes:', err);
     }
   };
 
-  // Claim 25 Free credits once
+  const refreshWallet = async () => {
+    if (!auth.currentUser) {
+      setWallet(null);
+      setLedger([]);
+      return;
+    }
+    try {
+      const token = await getIdToken();
+      if (!token) return;
+
+      const res = await fetch('/api/wallet', {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setWallet(data.wallet);
+        setLedger(data.ledger || []);
+      }
+    } catch (err) {
+      console.warn('[AuthContext] Erro ao carregar carteira:', err);
+    }
+  };
+
   const claimFreeBonus = async (): Promise<{ success: boolean; message: string }> => {
     const token = await getIdToken();
-    if (!token) {
-      return { success: false, message: 'Usuário não autenticado.' };
-    }
+    if (!token) return { success: false, message: 'Usuário não autenticado.' };
 
     try {
       const res = await fetch('/api/wallet/claim-free', {
         method: 'POST',
         headers: {
+          'Content-Type': 'application/json',
           Authorization: `Bearer ${token}`,
         },
       });
       const data = await res.json();
       if (!res.ok) {
-        return {
-          success: false,
-          message: data.error || data.details || 'Falha ao processar bônus gratuito.',
-        };
+        return { success: false, message: data.error || 'Erro ao resgatar bônus.' };
       }
       await refreshWallet();
       return {
-        success: data.success,
-        message: data.message,
+        success: true,
+        message: data.message || `Parabéns! Você recebeu ${data.grantedCredits} créditos de cortesia.`,
       };
     } catch (err: any) {
       return { success: false, message: err.message || 'Erro ao resgatar bônus.' };
@@ -196,12 +236,13 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const refreshProfile = async () => {
     if (!auth.currentUser) {
       setProfile(null);
+      setProfilePersisted(false);
+      setProfileSyncError(null);
       return;
     }
     try {
       const token = await getIdToken();
-      const updated = await syncUserProfileClient(auth.currentUser, { idToken: token });
-      setProfile(updated);
+      await syncProfileForUser(auth.currentUser, token);
     } catch (err) {
       console.warn('[AuthContext] Erro ao atualizar perfil:', err);
     }
@@ -212,8 +253,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     const cred = await signInWithEmailAndPassword(auth, email, pass);
     if (cred.user) {
       const token = await cred.user.getIdToken().catch(() => null);
-      const syncedProfile = await syncUserProfileClient(cred.user, { idToken: token });
-      setProfile(syncedProfile);
+      await syncProfileForUser(cred.user, token);
       await refreshWallet();
       await checkAdminRole();
     }
@@ -226,22 +266,29 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       throw new Error('Falha ao registrar usuário no Firebase Auth.');
     }
 
-    // 2. Cria / sincroniza perfil no Firestore users/{uid} (com dados mínimos e seguros)
+    // 2. Cria / sincroniza perfil no Firestore users/{uid} autoritativamente via backend
     let token: string | null = null;
     try {
       token = await cred.user.getIdToken();
-      const syncedProfile = await syncUserProfileClient(cred.user, {
-        isNewRegistration: true,
-        idToken: token,
-      });
-      setProfile(syncedProfile);
-    } catch (profileError: any) {
-      console.error('[AuthContext] Falha na sincronização do perfil Firestore:', profileError);
-      throw new Error(
-        `Conta criada no Firebase Auth, porém ocorreu erro ao inicializar o perfil: ${
-          profileError?.message || 'Falha de comunicação'
-        }. Tente efetuar login para sincronizar.`
-      );
+    } catch {
+      // Segue tentativa
+    }
+
+    if (token) {
+      const syncRes = await syncUserProfileAuthoritative(cred.user, token);
+      if (!syncRes.persisted) {
+        console.error('[AuthContext] Falha na sincronização inicial do perfil Firestore:', syncRes.error);
+        throw new Error(
+          `Conta criada no Firebase Auth, porém ocorreu erro ao persistir o perfil: ${
+            syncRes.error || 'Falha de comunicação'
+          }. Faça login novamente para concluir a ativação.`
+        );
+      }
+      setProfile(syncRes.profile);
+      setProfilePersisted(true);
+      setProfileSyncError(null);
+    } else {
+      throw new Error('Conta criada no Firebase Auth, mas não foi possível autenticar o token de perfil.');
     }
 
     // 3. Envia e-mail de verificação
@@ -262,8 +309,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       const cred = await signInWithPopup(auth, provider);
       if (cred.user) {
         const token = await cred.user.getIdToken().catch(() => null);
-        const syncedProfile = await syncUserProfileClient(cred.user, { idToken: token });
-        setProfile(syncedProfile);
+        await syncProfileForUser(cred.user, token);
         await refreshWallet();
         await checkAdminRole();
       }
@@ -281,6 +327,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     await signOut(auth);
     setUser(null);
     setProfile(null);
+    setProfilePersisted(false);
+    setProfileSyncError(null);
     setWallet(null);
     setLedger([]);
     setIsAdmin(false);
@@ -302,13 +350,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       try {
         await current.reload();
         // Force refresh ID token to get latest claims and email_verified state
-        await current.getIdToken(true);
-        // Atualizar estado com a instância genuína de User do Firebase Auth
+        const freshToken = await current.getIdToken(true);
         if (auth.currentUser) {
           setUser(auth.currentUser);
-          const token = await auth.currentUser.getIdToken().catch(() => null);
-          const updated = await syncUserProfileClient(auth.currentUser, { idToken: token });
-          setProfile(updated);
+          await syncProfileForUser(auth.currentUser, freshToken);
         }
         await refreshWallet();
         await checkAdminRole();
@@ -326,8 +371,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       .then(async (cred) => {
         if (cred && cred.user) {
           const token = await cred.user.getIdToken().catch(() => null);
-          const syncedProfile = await syncUserProfileClient(cred.user, { idToken: token });
-          setProfile(syncedProfile);
+          await syncProfileForUser(cred.user, token);
         }
       })
       .catch((redirectErr) => {
@@ -339,9 +383,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       if (currentUser) {
         try {
           const token = await currentUser.getIdToken().catch(() => null);
-          // Migração automática de usuários existentes sem users/{uid}
-          const syncedProfile = await syncUserProfileClient(currentUser, { idToken: token });
-          setProfile(syncedProfile);
+          // Migração automática autoritativa de usuários existentes sem users/{uid}
+          await syncProfileForUser(currentUser, token);
         } catch (profErr) {
           console.warn('[AuthContext] Erro ao sincronizar perfil do usuário na sessão:', profErr);
         }
@@ -349,6 +392,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         await checkAdminRole();
       } else {
         setProfile(null);
+        setProfilePersisted(false);
+        setProfileSyncError(null);
         setWallet(null);
         setLedger([]);
         setIsAdmin(false);
@@ -364,6 +409,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       value={{
         user,
         profile,
+        profilePersisted,
+        profileSyncError,
         loading,
         wallet,
         ledger,

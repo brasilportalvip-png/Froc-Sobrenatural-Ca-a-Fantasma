@@ -1,0 +1,10 @@
+# Robots.txt para Froc Sobrenatural Caça Fantasma
+User-agent: *
+Allow: /
+Disallow: /api/
+Disallow: /painel
+Disallow: /admin
+Disallow: /politica-de-privacidade
+Disallow: /termos-de-uso
+
+Sitemap: https://froc-sobrenatural-ca-a-fantasma.vercel.app/sitemap.xml

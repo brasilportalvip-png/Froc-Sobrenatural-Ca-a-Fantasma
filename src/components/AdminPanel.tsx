@@ -474,7 +474,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onBackToApp, onOpenAuth 
               <Search className="w-4 h-4 text-slate-500 absolute left-3 top-3" />
               <input
                 type="text"
-                placeholder="Filtrar por UID do usuário..."
+                placeholder="Buscar por UID, E-mail ou Nome..."
                 value={searchTerm}
                 onChange={(e) => setSearchTerm(e.target.value)}
                 onKeyDown={(e) => e.key === 'Enter' && loadUsers()}
@@ -493,24 +493,42 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onBackToApp, onOpenAuth 
             <table className="w-full text-left text-xs font-mono border-collapse">
               <thead>
                 <tr className="border-b border-slate-800 text-slate-400 bg-slate-900/50">
-                  <th className="py-2.5 px-3">UID do Usuário</th>
-                  <th className="py-2.5 px-3 text-right">Saldo Disponível</th>
+                  <th className="py-2.5 px-3">Usuário &amp; Identidade</th>
+                  <th className="py-2.5 px-3">Provedor / Status</th>
+                  <th className="py-2.5 px-3 text-right">Saldo</th>
                   <th className="py-2.5 px-3 text-right">Reservado</th>
                   <th className="py-2.5 px-3 text-right">Promocional</th>
                   <th className="py-2.5 px-3 text-right">Comprados</th>
-                  <th className="py-2.5 px-3 text-right">Ajuste Manual</th>
                   <th className="py-2.5 px-3 text-center">Ações</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-900">
                 {usersList.map((u) => (
                   <tr key={u.uid} className="hover:bg-slate-900/40 transition">
-                    <td className="py-2.5 px-3 font-mono text-cyan-300 font-bold">{u.uid}</td>
+                    <td className="py-2.5 px-3 font-mono">
+                      <div className="text-cyan-300 font-bold">{u.displayName || u.email || 'Sem nome'}</div>
+                      <div className="text-[10px] text-slate-400 select-all">{u.uid}</div>
+                      {u.email && u.displayName && <div className="text-[10px] text-slate-500">{u.email}</div>}
+                    </td>
+                    <td className="py-2.5 px-3 font-mono">
+                      <div className="flex items-center gap-1.5">
+                        <span className="uppercase text-[10px] px-1.5 py-0.5 rounded bg-slate-800 border border-slate-700 text-slate-300">
+                          {u.authProvider || 'pwd'}
+                        </span>
+                        {u.emailVerified ? (
+                          <span className="text-emerald-400 text-[10px]" title="E-mail verificado">✓</span>
+                        ) : (
+                          <span className="text-amber-400 text-[10px]" title="E-mail não verificado">⚠</span>
+                        )}
+                      </div>
+                      <div className="text-[10px] text-slate-500">
+                        {u.hasWallet ? 'Carteira OK' : 'Sem carteira'}
+                      </div>
+                    </td>
                     <td className="py-2.5 px-3 text-right text-emerald-400 font-bold">{u.balance}</td>
                     <td className="py-2.5 px-3 text-right text-amber-400">{u.reserved}</td>
                     <td className="py-2.5 px-3 text-right text-slate-300">{u.promotionalGranted}</td>
                     <td className="py-2.5 px-3 text-right text-blue-300">{u.purchasedTotal}</td>
-                    <td className="py-2.5 px-3 text-right text-purple-300">{u.manualGrantedTotal || 0}</td>
                     <td className="py-2.5 px-3 text-center">
                       <button
                         onClick={() => {
