@@ -156,18 +156,43 @@ export async function reserveConsultationCredits(
       if (!payloadHash || cData.payloadHash !== payloadHash) {
         throw new Error('REQUEST_PAYLOAD_MISMATCH');
       }
+      if (cData.status === 'completed' && cData.resultData) {
+        const wSnap = await t.get(walletRef);
+        const wData = wSnap.data() as UserWallet;
+        return {
+          success: true,
+          consultationId: consultationRef.id,
+          balanceAfter: wData?.balance || 0,
+          reservedAfter: wData?.reserved || 0,
+          cachedResult: cData.resultData,
+        };
+      }
+
+      // Se a reserva ficou presa ('reserved') há mais de 2 minutos (TTL de timeout serverless),
+      // reabilitar esta mesma reserva reaproveitando os créditos já reservados anteriormente
+      // sem debitar novamente a carteira!
+      const RESERVATION_TTL_MS = 2 * 60 * 1000;
+      const isStale = cData.status === 'reserved' && (Date.now() - (cData.createdAt || 0)) > RESERVATION_TTL_MS;
+
+      if (isStale) {
+        // Renovar o timestamp da reserva para reexecução segura
+        t.update(consultationRef, {
+          createdAt: Date.now(),
+          retriedAt: Date.now(),
+        });
+        const wSnap = await t.get(walletRef);
+        const wData = wSnap.data() as UserWallet;
+        return {
+          success: true,
+          consultationId: consultationRef.id,
+          balanceAfter: wData?.balance || 0,
+          reservedAfter: wData?.reserved || 0,
+        };
+      }
+
       if (cData.status !== 'completed' || !cData.resultData) {
         throw new Error('CONSULTATION_IN_PROGRESS');
       }
-      const wSnap = await t.get(walletRef);
-      const wData = wSnap.data() as UserWallet;
-      return {
-        success: true,
-        consultationId: consultationRef.id,
-        balanceAfter: wData?.balance || 0,
-        reservedAfter: wData?.reserved || 0,
-        cachedResult: cData.resultData,
-      };
     }
 
     const walletSnap = await t.get(walletRef);

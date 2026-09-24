@@ -16,8 +16,9 @@ export function verifyMercadoPagoWebhookSignature(
     return false;
   }
 
-  // O cabeçalho vem no formato: ts=1709...;v1=abcdef...
-  const parts = xSignatureHeader.split(',').map((p) => p.trim());
+  // O cabeçalho do Mercado Pago pode vir separado por vírgula (,) ou ponto-e-vírgula (;)
+  // Exemplo: ts=1709...;v1=abcdef... ou ts=1709...,v1=abcdef...
+  const parts = xSignatureHeader.split(/[,;]/).map((p) => p.trim());
   let ts = '';
   let v1 = '';
 
@@ -30,8 +31,13 @@ export function verifyMercadoPagoWebhookSignature(
   if (!ts || !v1) {
     return false;
   }
-  const timestamp = Number(ts);
-  // The signature timestamp is milliseconds. Reject replayed notifications.
+  let timestamp = Number(ts);
+  // Se o timestamp vier em segundos (Unix standard 10 dígitos), converter para milissegundos
+  if (timestamp < 10000000000) {
+    timestamp = timestamp * 1000;
+  }
+
+  // Reject replayed notifications (janela de tolerância de 10 minutos)
   if (!Number.isSafeInteger(timestamp) || Math.abs(Date.now() - timestamp) > 10 * 60_000) {
     return false;
   }

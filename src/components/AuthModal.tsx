@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { useAuth } from '../services/AuthContext';
+import { useAuth, getFriendlyAuthErrorMessage } from '../services/AuthContext';
 import { User, LogIn, UserPlus, Key, Mail, ShieldAlert, CheckCircle } from 'lucide-react';
 
 export const AuthModal: React.FC<{ isOpen: boolean; onClose: () => void }> = ({
@@ -47,7 +47,7 @@ export const AuthModal: React.FC<{ isOpen: boolean; onClose: () => void }> = ({
       }
     } catch (err: any) {
       setFeedback({
-        message: err.message || 'Erro na autenticação.',
+        message: getFriendlyAuthErrorMessage(err),
         isError: true,
       });
     } finally {
@@ -63,7 +63,7 @@ export const AuthModal: React.FC<{ isOpen: boolean; onClose: () => void }> = ({
       onClose();
     } catch (err: any) {
       setFeedback({
-        message: err.message || 'Falha ao autenticar com Google.',
+        message: getFriendlyAuthErrorMessage(err),
         isError: true,
       });
     } finally {

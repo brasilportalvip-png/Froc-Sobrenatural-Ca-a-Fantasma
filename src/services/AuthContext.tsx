@@ -9,9 +9,38 @@ import {
   sendPasswordResetEmail,
   GoogleAuthProvider,
   signInWithPopup,
+  signInWithRedirect,
 } from 'firebase/auth';
 import { auth } from './firebaseClient';
 import { UserWallet, LedgerEntry, CreditPackage } from '../types';
+
+export function getFriendlyAuthErrorMessage(err: any): string {
+  const code = err?.code || '';
+  switch (code) {
+    case 'auth/invalid-email':
+      return 'O formato do e-mail informado é inválido.';
+    case 'auth/user-disabled':
+      return 'Esta conta de usuário foi temporariamente desativada pelo administrador.';
+    case 'auth/user-not-found':
+    case 'auth/wrong-password':
+    case 'auth/invalid-credential':
+      return 'E-mail ou senha incorretos. Verifique suas credenciais.';
+    case 'auth/email-already-in-use':
+      return 'Este e-mail já está cadastrado. Tente entrar ou recupere sua senha.';
+    case 'auth/weak-password':
+      return 'A senha é muito fraca. Utilize pelo menos 6 caracteres.';
+    case 'auth/popup-closed-by-user':
+      return 'A janela de autenticação do Google foi fechada antes de concluir o acesso.';
+    case 'auth/popup-blocked':
+      return 'A janela pop-up foi bloqueada pelo navegador. Permita pop-ups para fazer login.';
+    case 'auth/network-request-failed':
+      return 'Falha de conexão com a rede. Verifique sua conexão com a internet.';
+    case 'auth/too-many-requests':
+      return 'Muitas tentativas consecutivas. Aguarde alguns instantes antes de tentar novamente.';
+    default:
+      return err?.message || 'Falha na autenticação do usuário.';
+  }
+}
 
 interface AuthContextType {
   user: User | null;
@@ -164,7 +193,17 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   const loginWithGoogle = async () => {
     const provider = new GoogleAuthProvider();
-    await signInWithPopup(auth, provider);
+    provider.setCustomParameters({ prompt: 'select_account' });
+    try {
+      await signInWithPopup(auth, provider);
+    } catch (popupErr: any) {
+      if (popupErr.code === 'auth/popup-blocked') {
+        console.warn('[Auth] Popup bloqueado, tentando redirecionamento:', popupErr);
+        await signInWithRedirect(auth, provider);
+      } else {
+        throw popupErr;
+      }
+    }
   };
 
   const logoutUser = async () => {
@@ -184,11 +223,21 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   };
 
   const reloadUser = async () => {
-    if (auth.currentUser) {
-      await auth.currentUser.reload();
-      setUser({ ...auth.currentUser });
-      await refreshWallet();
-      await checkAdminRole();
+    const current = auth.currentUser;
+    if (current) {
+      try {
+        await current.reload();
+        // Force refresh ID token to get latest claims and email_verified state
+        await current.getIdToken(true);
+        // Atualizar estado com a instância genuína de User do Firebase Auth
+        if (auth.currentUser) {
+          setUser(auth.currentUser);
+        }
+        await refreshWallet();
+        await checkAdminRole();
+      } catch (reloadErr) {
+        console.warn('[AuthContext] Falha ao recarregar usuário:', reloadErr);
+      }
     }
   };
 

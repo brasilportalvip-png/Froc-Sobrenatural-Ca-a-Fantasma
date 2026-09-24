@@ -188,3 +188,23 @@ test('13. Security: GET /api/user/role rejects unauthenticated requests with 401
   });
   assert.equal(res.status, 401);
 });
+
+test('14. Security: GET /api/admin/users rejects unauthenticated requests with 401', async () => {
+  const res = await callApp({
+    method: 'GET',
+    path: '/api/admin/users',
+  });
+  assert.equal(res.status, 401);
+});
+
+test('15. Security: Request with malformed Bearer token is rejected with 401', async () => {
+  const res = await callApp({
+    method: 'GET',
+    path: '/api/wallet',
+    headers: {
+      authorization: 'Bearer malformed.invalid.token',
+    },
+  });
+  assert.equal(res.status, 401);
+});
+

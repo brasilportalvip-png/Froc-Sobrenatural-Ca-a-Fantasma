@@ -179,33 +179,39 @@ export default function App() {
     };
   }, []);
 
-  // Real-time animation loop for audio & sensor polling
+  // Real-time loop for audio & sensor polling throttled to ~20FPS (50ms)
+  // Prevents whole-app 60FPS re-rendering while keeping instruments responsive and smooth
   useEffect(() => {
     let animId: number;
+    let lastTick = 0;
+    const INTERVAL_MS = 50; // 20 updates per second is ideal for telemetry without lag
 
-    const tick = () => {
-      if (audioEngineRef.current) {
-        const metrics = audioEngineRef.current.getMetrics();
-        setAudioMetrics(metrics);
+    const tick = (now: number) => {
+      if (now - lastTick >= INTERVAL_MS) {
+        lastTick = now;
+        if (audioEngineRef.current) {
+          const metrics = audioEngineRef.current.getMetrics();
+          setAudioMetrics(metrics);
 
-        const sensors = sensorEngineRef.current?.getReadings();
-        if (sensors) {
-          setSensorState({
-            magnetometer: {
-              ...sensors.magnetometer,
-              unit: 'µT',
-            },
-            motion: {
-              ...sensors.motion,
-              unit: 'm/s²',
-            },
-            audioLevel: {
-              dbfs: metrics.dbfs,
-              rms: metrics.rms,
-              peakHz: metrics.peakFrequencyHz,
-              isSpeechBand: metrics.isVoiceBand,
-            },
-          });
+          const sensors = sensorEngineRef.current?.getReadings();
+          if (sensors) {
+            setSensorState({
+              magnetometer: {
+                ...sensors.magnetometer,
+                unit: 'µT',
+              },
+              motion: {
+                ...sensors.motion,
+                unit: 'm/s²',
+              },
+              audioLevel: {
+                dbfs: metrics.dbfs,
+                rms: metrics.rms,
+                peakHz: metrics.peakFrequencyHz,
+                isSpeechBand: metrics.isVoiceBand,
+              },
+            });
+          }
         }
       }
       animId = requestAnimationFrame(tick);
@@ -241,8 +247,9 @@ export default function App() {
 
   // Start a New Session
   const handleStartSession = async () => {
+    const sessionId = typeof crypto !== 'undefined' && crypto.randomUUID ? `session_${crypto.randomUUID()}` : `session_${Date.now()}`;
     const newSession: Session = {
-      id: `froc_session_${Date.now()}`,
+      id: sessionId,
       title: `Sessão de Campo #${sessions.length + 1}`,
       startTime: Date.now(),
       investigatorName: 'Investigador Principal',

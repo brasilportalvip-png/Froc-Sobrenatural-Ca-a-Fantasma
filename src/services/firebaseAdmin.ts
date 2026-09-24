@@ -9,8 +9,63 @@ import firebaseConfig from './firebaseConfig';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
+export interface ServiceAccountCredentials {
+  projectId: string;
+  project_id: string;
+  clientEmail: string;
+  client_email: string;
+  privateKey: string;
+  private_key: string;
+  type?: string;
+  [key: string]: any;
+}
+
+/**
+ * Validação rigorosa dos campos e integridade de uma Service Account.
+ * Exige conjuntamente project_id, client_email e private_key como strings não-vazias.
+ */
+export function validateServiceAccountCredentials(cred: any): ServiceAccountCredentials | null {
+  if (!cred || typeof cred !== 'object' || Array.isArray(cred)) {
+    return null;
+  }
+
+  const { project_id, client_email, private_key } = cred;
+
+  if (typeof project_id !== 'string' || project_id.trim().length === 0) {
+    return null;
+  }
+
+  if (typeof client_email !== 'string' || client_email.trim().length === 0 || !client_email.includes('@')) {
+    return null;
+  }
+
+  if (typeof private_key !== 'string' || private_key.trim().length === 0) {
+    return null;
+  }
+
+  let normalizedKey = private_key.trim();
+  // Normalizar quebras de linha caso estejam escapadas como \n literais
+  if (normalizedKey.includes('\\n')) {
+    normalizedKey = normalizedKey.replace(/\\n/g, '\n');
+  }
+
+  if (!normalizedKey.includes('BEGIN PRIVATE KEY') || !normalizedKey.includes('END PRIVATE KEY')) {
+    return null;
+  }
+
+  return {
+    ...cred,
+    project_id: project_id.trim(),
+    client_email: client_email.trim(),
+    private_key: normalizedKey,
+    projectId: project_id.trim(),
+    clientEmail: client_email.trim(),
+    privateKey: normalizedKey,
+  };
+}
+
 // Helper para parsear credenciais com separação explícita entre Desenvolvimento e Produção (Vercel)
-function parseServiceAccount(): any | null {
+export function parseServiceAccount(): ServiceAccountCredentials | null {
   const isProduction = process.env.NODE_ENV === 'production' || !!process.env.VERCEL;
 
   // 1. Variáveis de ambiente com JSON completo ou Base64 (Prioridade obrigatória em Produção / Vercel)
@@ -32,8 +87,9 @@ function parseServiceAccount(): any | null {
     // Tentativa A: Parse direto como JSON
     try {
       const parsed = JSON.parse(clean);
-      if (parsed && typeof parsed === 'object' && (parsed.private_key || parsed.client_email)) {
-        return parsed;
+      const validated = validateServiceAccountCredentials(parsed);
+      if (validated) {
+        return validated;
       }
     } catch {
       // Pode ser base64
@@ -41,24 +97,32 @@ function parseServiceAccount(): any | null {
 
     // Tentativa B: Decodificação Base64
     try {
-      const decoded = Buffer.from(clean, 'base64').toString('utf-8');
-      const parsed = JSON.parse(decoded);
-      if (parsed && typeof parsed === 'object' && (parsed.private_key || parsed.client_email)) {
-        return parsed;
+      // Validar formato base64 antes de decodificar
+      if (/^[A-Za-z0-9+/=]+$/.test(clean.replace(/\s+/g, ''))) {
+        const decoded = Buffer.from(clean, 'base64').toString('utf-8');
+        const parsed = JSON.parse(decoded);
+        const validated = validateServiceAccountCredentials(parsed);
+        if (validated) {
+          return validated;
+        }
       }
     } catch {
-      // Não é base64
+      // Não é base64 válido
     }
   }
 
   // 2. Variáveis de ambiente individuais
   if (process.env.FIREBASE_PRIVATE_KEY && process.env.FIREBASE_CLIENT_EMAIL) {
-    return {
+    const candidate = {
       type: 'service_account',
       project_id: process.env.FIREBASE_PROJECT_ID || firebaseConfig.projectId,
       client_email: process.env.FIREBASE_CLIENT_EMAIL,
       private_key: process.env.FIREBASE_PRIVATE_KEY,
     };
+    const validated = validateServiceAccountCredentials(candidate);
+    if (validated) {
+      return validated;
+    }
   }
 
   // 3. Em Produção (Vercel / Cloud Run), NUNCA depender de arquivos no sistema de arquivos local
@@ -83,8 +147,9 @@ function parseServiceAccount(): any | null {
       if (fs.existsSync(p)) {
         const raw = fs.readFileSync(p, 'utf-8');
         const parsed = JSON.parse(raw);
-        if (parsed && typeof parsed === 'object' && parsed.private_key) {
-          return parsed;
+        const validated = validateServiceAccountCredentials(parsed);
+        if (validated) {
+          return validated;
         }
       }
     } catch {
@@ -105,7 +170,7 @@ if (existingApps.length > 0) {
   // IMPORTANTE: Não assumir automaticamente que hasValidServiceAccount é true só porque um app existe.
   // Testar se as opções do app contêm credencial válida ou tentar carregar as credenciais.
   const credentials = parseServiceAccount();
-  if (credentials && credentials.private_key) {
+  if (credentials && credentials.private_key && credentials.project_id && credentials.client_email) {
     hasValidServiceAccount = true;
   }
 } else {
