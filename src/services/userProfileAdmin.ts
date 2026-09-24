@@ -29,10 +29,14 @@ export async function ensureUserProfileServer(userRecord: {
   const snap = await userRef.get();
 
   if (!snap.exists) {
+    const displayName = userRecord.name || (userRecord.email ? userRecord.email.split('@')[0] : null);
+    const email = userRecord.email || null;
     const newProfile: UserProfile = {
       uid,
-      email: userRecord.email || null,
-      displayName: userRecord.name || (userRecord.email ? userRecord.email.split('@')[0] : null),
+      email,
+      displayName,
+      displayNameLower: displayName ? displayName.toLowerCase().trim() : null,
+      emailLower: email ? email.toLowerCase().trim() : null,
       photoURL: userRecord.picture || null,
       createdAt: now,
       updatedAt: now,
@@ -53,12 +57,19 @@ export async function ensureUserProfileServer(userRecord: {
 
     if (userRecord.name && userRecord.name !== existing.displayName) {
       updates.displayName = userRecord.name;
+      updates.displayNameLower = userRecord.name.toLowerCase().trim();
+    } else if (!existing.displayNameLower && existing.displayName) {
+      updates.displayNameLower = existing.displayName.toLowerCase().trim();
     }
+
     if (userRecord.picture && userRecord.picture !== existing.photoURL) {
       updates.photoURL = userRecord.picture;
     }
     if (userRecord.email && userRecord.email !== existing.email) {
       updates.email = userRecord.email;
+      updates.emailLower = userRecord.email.toLowerCase().trim();
+    } else if (!existing.emailLower && existing.email) {
+      updates.emailLower = existing.email.toLowerCase().trim();
     }
 
     await userRef.update(updates);

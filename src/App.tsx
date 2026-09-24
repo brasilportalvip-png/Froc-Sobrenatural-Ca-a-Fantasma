@@ -119,43 +119,79 @@ export default function App() {
 
   // Sincronizar metadados dinâmicos de SEO e rotas da SPA
   useEffect(() => {
-    const metaDesc = document.querySelector('meta[name="description"]');
-    const metaRobots = document.querySelector('meta[name="robots"]');
-    const canonicalLink = document.querySelector('link[rel="canonical"]');
-
     const BASE_URL = 'https://froc-sobrenatural-ca-a-fantasma.vercel.app';
+    const OG_IMAGE = `${BASE_URL}/og-image.png`;
+    const OG_IMAGE_ALT = 'Estação Froc Sobrenatural Caça Fantasma - Painel de Telemetria e Espectrografia';
+
+    const setMeta = (selector: string, attr: string, value: string) => {
+      let el = document.querySelector(selector);
+      if (!el) {
+        if (selector.startsWith('meta[')) {
+          el = document.createElement('meta');
+          const match = selector.match(/meta\[([a-zA-Z:]+)="([^"]+)"\]/);
+          if (match) el.setAttribute(match[1], match[2]);
+          document.head.appendChild(el);
+        } else if (selector.startsWith('link[')) {
+          el = document.createElement('link');
+          const match = selector.match(/link\[([a-zA-Z:]+)="([^"]+)"\]/);
+          if (match) el.setAttribute(match[1], match[2]);
+          document.head.appendChild(el);
+        }
+      }
+      if (el) el.setAttribute(attr, value);
+    };
+
+    let title = 'Froc Sobrenatural Caça Fantasma';
+    let description = 'Estação metodológica de pesquisa e investigação de campo com telemetria de sensores, espectrograma de áudio, registro de evidências e protocolo de teste cego criptografado.';
+    let robots = 'index, follow';
+    let canonical = BASE_URL;
 
     if (activeTab === 'privacy') {
-      document.title = 'Política de Privacidade | Froc Sobrenatural Caça Fantasma';
-      if (metaDesc) metaDesc.setAttribute('content', 'Política de Privacidade, tratamento de dados e diretrizes de conformidade LGPD da estação Froc Sobrenatural.');
-      if (metaRobots) metaRobots.setAttribute('content', 'index, follow');
-      if (canonicalLink) canonicalLink.setAttribute('href', `${BASE_URL}/politica-de-privacidade`);
+      title = 'Política de Privacidade | Froc Sobrenatural';
+      description = 'Diretrizes transparentes de tratamento e retenção de dados, conformidade LGPD e segurança técnica da estação Froc Sobrenatural.';
+      robots = 'index, follow';
+      canonical = `${BASE_URL}/politica-de-privacidade`;
     } else if (activeTab === 'terms') {
-      document.title = 'Termos de Uso e Serviço | Froc Sobrenatural Caça Fantasma';
-      if (metaDesc) metaDesc.setAttribute('content', 'Termos e Condições de Uso, mecânica de créditos periciais e garantias técnicas da estação Froc Sobrenatural.');
-      if (metaRobots) metaRobots.setAttribute('content', 'index, follow');
-      if (canonicalLink) canonicalLink.setAttribute('href', `${BASE_URL}/termos-de-uso`);
+      title = 'Termos de Uso e Serviço | Froc Sobrenatural';
+      description = 'Termos de serviço, modelo de créditos pré-pagos periciais, critérios de reembolso e limites da estação Froc Sobrenatural.';
+      robots = 'index, follow';
+      canonical = `${BASE_URL}/termos-de-uso`;
     } else if (activeTab === 'painel') {
-      document.title = 'Painel do Investigador | Froc Sobrenatural';
-      if (metaDesc) metaDesc.setAttribute('content', 'Área restrita de gestão de créditos, recargas e histórico de consultas periciais.');
-      if (metaRobots) metaRobots.setAttribute('content', 'noindex, nofollow');
-      if (canonicalLink) canonicalLink.setAttribute('href', `${BASE_URL}/painel`);
+      title = 'Painel do Investigador | Froc Sobrenatural';
+      description = 'Área restrita de gestão de créditos, recargas e histórico de consultas periciais.';
+      robots = 'noindex, nofollow';
+      canonical = `${BASE_URL}/painel`;
     } else if (activeTab === 'admin') {
-      document.title = 'Console de Administração | Froc Sobrenatural';
-      if (metaDesc) metaDesc.setAttribute('content', 'Console restrito de governança e auditoria transacional.');
-      if (metaRobots) metaRobots.setAttribute('content', 'noindex, nofollow');
-      if (canonicalLink) canonicalLink.setAttribute('href', `${BASE_URL}/admin`);
+      title = 'Console de Administração | Froc Sobrenatural';
+      description = 'Console restrito de governança e auditoria transacional.';
+      robots = 'noindex, nofollow';
+      canonical = `${BASE_URL}/admin`;
     } else if (activeTab === 'notfound') {
-      document.title = '404 - Coordenada Não Encontrada | Froc Sobrenatural';
-      if (metaDesc) metaDesc.setAttribute('content', 'A coordenada ou rota solicitada não existe nesta estação investigativa.');
-      if (metaRobots) metaRobots.setAttribute('content', 'noindex, nofollow');
-      if (canonicalLink) canonicalLink.setAttribute('href', BASE_URL);
-    } else {
-      document.title = 'Froc Sobrenatural Caça Fantasma';
-      if (metaDesc) metaDesc.setAttribute('content', 'Estação avançada de investigação sobrenatural com cadeia de evidência, análise de sinais de áudio, sensores reais, câmera, Ouija e teste cego rigoroso.');
-      if (metaRobots) metaRobots.setAttribute('content', 'index, follow');
-      if (canonicalLink) canonicalLink.setAttribute('href', BASE_URL);
+      title = '404 - Coordenada Não Encontrada | Froc Sobrenatural';
+      description = 'A coordenada ou rota solicitada não existe nesta estação investigativa.';
+      robots = 'noindex, nofollow';
+      canonical = BASE_URL;
     }
+
+    document.title = title;
+    setMeta('meta[name="description"]', 'content', description);
+    setMeta('meta[name="robots"]', 'content', robots);
+    setMeta('link[rel="canonical"]', 'href', canonical);
+
+    // Open Graph
+    setMeta('meta[property="og:title"]', 'content', title);
+    setMeta('meta[property="og:description"]', 'content', description);
+    setMeta('meta[property="og:url"]', 'content', canonical);
+    setMeta('meta[property="og:image"]', 'content', OG_IMAGE);
+    setMeta('meta[property="og:image:width"]', 'content', '1200');
+    setMeta('meta[property="og:image:height"]', 'content', '630');
+    setMeta('meta[property="og:image:alt"]', 'content', OG_IMAGE_ALT);
+
+    // Twitter Cards
+    setMeta('meta[name="twitter:title"]', 'content', title);
+    setMeta('meta[name="twitter:description"]', 'content', description);
+    setMeta('meta[name="twitter:image"]', 'content', OG_IMAGE);
+    setMeta('meta[name="twitter:image:alt"]', 'content', OG_IMAGE_ALT);
   }, [activeTab]);
 
   // Initialize Engines & Storage

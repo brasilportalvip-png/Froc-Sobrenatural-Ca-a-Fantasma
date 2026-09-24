@@ -2,6 +2,7 @@ import express, { Request, Response } from 'express';
 import dotenv from 'dotenv';
 import crypto from 'crypto';
 import { GoogleGenAI } from '@google/genai';
+import { AggregateField } from 'firebase-admin/firestore';
 import { adminAuth, adminDb, isFirebaseAdminConfigured } from './services/firebaseAdmin';
 import {
   getOrCreateWallet,
@@ -639,35 +640,77 @@ app.get('/api/user/profile', authenticateFirebaseUser, async (req: any, res: Res
 // 10. PAINEL DO ADMINISTRADOR (/api/admin/*)
 // =========================================================================
 
-// Visão Geral e Métricas Consolidadas do Admin
+// Visão Geral e Métricas Consolidadas do Admin (com agregações autoritativas Firestore)
 app.get('/api/admin/overview', requireAdmin, async (_req: any, res: Response) => {
   try {
-    // 1. Contagem autoritativa de usuários: coleção users com fallback para auth
     let totalRegisteredUsers = 0;
+    let totalWalletsCount = 0;
+    let totalOrdersCount = 0;
+    let totalConsultationsCount = 0;
+    let isPartial = false;
+
+    // 1. Contagens autoritativas via Firestore aggregation count()
     try {
-      const usersSnap = await adminDb.collection('users').limit(500).get();
-      totalRegisteredUsers = usersSnap.size;
-    } catch {
-      // Fallback
+      const [uCountSnap, wCountSnap, oCountSnap, cCountSnap] = await Promise.all([
+        adminDb.collection('users').count().get(),
+        adminDb.collection('wallets').count().get(),
+        adminDb.collection('orders').count().get(),
+        adminDb.collection('consultations').count().get(),
+      ]);
+      totalRegisteredUsers = uCountSnap.data().count;
+      totalWalletsCount = wCountSnap.data().count;
+      totalOrdersCount = oCountSnap.data().count;
+      totalConsultationsCount = cCountSnap.data().count;
+    } catch (countErr) {
+      console.warn('[Admin Overview] Agregação count() falhou ou não suportada no ambiente, usando fallback:', countErr);
+      const [uSnap, wSnap, oSnap, cSnap] = await Promise.all([
+        adminDb.collection('users').limit(500).get(),
+        adminDb.collection('wallets').limit(500).get(),
+        adminDb.collection('orders').limit(500).get(),
+        adminDb.collection('consultations').limit(500).get(),
+      ]);
+      totalRegisteredUsers = uSnap.size;
+      totalWalletsCount = wSnap.size;
+      totalOrdersCount = oSnap.size;
+      totalConsultationsCount = cSnap.size;
+      isPartial = uSnap.size >= 500 || wSnap.size >= 500 || oSnap.size >= 500 || cSnap.size >= 500;
     }
 
-    // 2. Wallets métricas
-    const walletsSnap = await adminDb.collection('wallets').limit(500).get();
+    // 2. Métricas financeiras e agregações de carteira
     let totalCreditsInCirculation = 0;
     let totalPurchasedCredits = 0;
     let totalSpentCredits = 0;
     let totalReservedCredits = 0;
 
-    walletsSnap.forEach((doc: any) => {
-      const data = doc.data();
-      totalCreditsInCirculation += data.balance || 0;
-      totalPurchasedCredits += data.purchasedTotal || 0;
-      totalSpentCredits += data.spentTotal || 0;
-      totalReservedCredits += data.reserved || 0;
-    });
+    try {
+      const walletAggSnap = await adminDb.collection('wallets').aggregate({
+        circulation: AggregateField.sum('balance'),
+        purchased: AggregateField.sum('purchasedTotal'),
+        spent: AggregateField.sum('spentTotal'),
+        reserved: AggregateField.sum('reserved'),
+      }).get();
+
+      const aggData = walletAggSnap.data();
+      totalCreditsInCirculation = aggData.circulation || 0;
+      totalPurchasedCredits = aggData.purchased || 0;
+      totalSpentCredits = aggData.spent || 0;
+      totalReservedCredits = aggData.reserved || 0;
+    } catch (aggErr) {
+      console.warn('[Admin Overview] AggregateField.sum não disponível no ambiente, somando via amostragem:', aggErr);
+      const walletsSampleSnap = await adminDb.collection('wallets').limit(500).get();
+      walletsSampleSnap.forEach((doc: any) => {
+        const data = doc.data();
+        totalCreditsInCirculation += data.balance || 0;
+        totalPurchasedCredits += data.purchasedTotal || 0;
+        totalSpentCredits += data.spentTotal || 0;
+        totalReservedCredits += data.reserved || 0;
+      });
+      if (walletsSampleSnap.size >= 500) {
+        isPartial = true;
+      }
+    }
 
     // 3. Pedidos agrupados por status
-    const ordersSnap = await adminDb.collection('orders').limit(500).get();
     const ordersCountByStatus: Record<string, number> = {
       created: 0,
       pending: 0,
@@ -676,29 +719,58 @@ app.get('/api/admin/overview', requireAdmin, async (_req: any, res: Response) =>
       refunded: 0,
     };
 
-    ordersSnap.forEach((doc: any) => {
-      const d = doc.data();
-      const status = d.status || 'created';
-      ordersCountByStatus[status] = (ordersCountByStatus[status] || 0) + 1;
-    });
+    try {
+      const [appSnap, pendSnap, refSnap, decSnap, creSnap] = await Promise.all([
+        adminDb.collection('orders').where('status', '==', 'approved').count().get(),
+        adminDb.collection('orders').where('status', '==', 'pending').count().get(),
+        adminDb.collection('orders').where('status', '==', 'refunded').count().get(),
+        adminDb.collection('orders').where('status', '==', 'declined').count().get(),
+        adminDb.collection('orders').where('status', '==', 'created').count().get(),
+      ]);
+      ordersCountByStatus.approved = appSnap.data().count;
+      ordersCountByStatus.pending = pendSnap.data().count;
+      ordersCountByStatus.refunded = refSnap.data().count;
+      ordersCountByStatus.declined = decSnap.data().count;
+      ordersCountByStatus.created = creSnap.data().count;
+    } catch {
+      const ordersSnap = await adminDb.collection('orders').limit(500).get();
+      ordersSnap.forEach((doc: any) => {
+        const d = doc.data();
+        const status = d.status || 'created';
+        ordersCountByStatus[status] = (ordersCountByStatus[status] || 0) + 1;
+      });
+      if (ordersSnap.size >= 500) isPartial = true;
+    }
 
     // 4. Consultas
-    const consultationsSnap = await adminDb.collection('consultations').limit(500).get();
     let totalConsultationsCompleted = 0;
     let totalConsultationsFailed = 0;
-    consultationsSnap.forEach((doc: any) => {
-      const d = doc.data();
-      if (d.status === 'completed') totalConsultationsCompleted++;
-      if (d.status === 'failed_released') totalConsultationsFailed++;
-    });
+    try {
+      const [compSnap, failSnap] = await Promise.all([
+        adminDb.collection('consultations').where('status', '==', 'completed').count().get(),
+        adminDb.collection('consultations').where('status', '==', 'failed_released').count().get(),
+      ]);
+      totalConsultationsCompleted = compSnap.data().count;
+      totalConsultationsFailed = failSnap.data().count;
+    } catch {
+      const consultationsSnap = await adminDb.collection('consultations').limit(500).get();
+      consultationsSnap.forEach((doc: any) => {
+        const d = doc.data();
+        if (d.status === 'completed') totalConsultationsCompleted++;
+        if (d.status === 'failed_released') totalConsultationsFailed++;
+      });
+      if (consultationsSnap.size >= 500) isPartial = true;
+    }
 
     const envAdminUids = (process.env.ADMIN_UIDS || '').split(',').filter(Boolean);
 
     res.json({
-      totalUsers: Math.max(totalRegisteredUsers, walletsSnap.size),
-      walletsCount: walletsSnap.size,
+      totalUsers: Math.max(totalRegisteredUsers, totalWalletsCount),
+      walletsCount: totalWalletsCount,
       registeredUsersCount: totalRegisteredUsers,
-      metricsPartial: walletsSnap.size === 500 || ordersSnap.size === 500 || consultationsSnap.size === 500,
+      totalOrdersCount,
+      totalConsultationsCount,
+      metricsPartial: isPartial,
       totalCreditsInCirculation,
       totalPurchasedCredits,
       totalSpentCredits,
@@ -718,99 +790,121 @@ app.get('/api/admin/overview', requireAdmin, async (_req: any, res: Response) =>
   }
 });
 
-// Listar Usuários e Carteiras (Admin - Usuários como entidade primária com paginação e busca indexada)
+// Listar Usuários e Carteiras (Admin - Usuários como entidade primária com busca global indexada e paginação consistente)
 app.get('/api/admin/users', requireAdmin, async (req: any, res: Response) => {
   try {
-    const search = (req.query.search as string || '').toLowerCase().trim();
+    const rawSearch = (req.query.search as string || '').trim();
+    const search = rawSearch.toLowerCase();
     const requestedLimit = Number(req.query.limit || 25);
     const limit = Number.isInteger(requestedLimit) ? Math.max(1, Math.min(requestedLimit, 100)) : 25;
     const startAfterUid = (req.query.startAfter as string || '').trim();
 
-    // 1. Busca direta por UID exato
-    if (search && /^[a-zA-Z0-9:_-]{1,128}$/.test(search)) {
-      const [directUserSnap, directWalletSnap] = await Promise.all([
-        adminDb.collection('users').doc(search).get(),
-        adminDb.collection('wallets').doc(search).get(),
-      ]);
+    // SE HOUVER TERMO DE BUSCA: Executa busca global indexada por UID, E-mail ou Nome
+    if (rawSearch) {
+      const matchedUserMap = new Map<string, any>();
 
-      if (directUserSnap.exists || directWalletSnap.exists) {
-        const uData = directUserSnap.data() || {};
-        const wData = directWalletSnap.data() || {};
-        return res.json({
-          users: [
-            {
-              uid: search,
-              email: uData.email || null,
-              displayName: uData.displayName || null,
-              photoURL: uData.photoURL || null,
-              authProvider: uData.authProvider || 'password',
-              emailVerified: !!uData.emailVerified,
-              balance: wData.balance || 0,
-              reserved: wData.reserved || 0,
-              promotionalGranted: wData.promotionalGranted || 0,
-              purchasedTotal: wData.purchasedTotal || 0,
-              manualGrantedTotal: wData.manualGrantedTotal || 0,
-              spentTotal: wData.spentTotal || 0,
-              debtAmount: wData.debtAmount || 0,
-              updatedAt: wData.updatedAt || uData.updatedAt || null,
-              hasWallet: directWalletSnap.exists,
-              hasProfile: directUserSnap.exists,
-            },
-          ],
-          hasMore: false,
-          nextCursor: null,
-        });
+      // 1. Busca direta por UID exato
+      if (/^[a-zA-Z0-9:_-]{1,128}$/.test(rawSearch)) {
+        try {
+          const directUserSnap = await adminDb.collection('users').doc(rawSearch).get();
+          if (directUserSnap.exists) {
+            matchedUserMap.set(directUserSnap.id, directUserSnap.data());
+          }
+        } catch {}
       }
+
+      // 2. Busca indexada por E-mail (exato, minúsculo e prefixo)
+      try {
+        const [emailExactSnap, emailLowerSnap] = await Promise.all([
+          adminDb.collection('users').where('email', '==', rawSearch).limit(limit).get(),
+          adminDb.collection('users').where('emailLower', '==', search).limit(limit).get(),
+        ]);
+        emailExactSnap.docs.forEach((doc: any) => matchedUserMap.set(doc.id, doc.data()));
+        emailLowerSnap.docs.forEach((doc: any) => matchedUserMap.set(doc.id, doc.data()));
+
+        if (matchedUserMap.size < limit) {
+          const emailPrefixSnap = await adminDb
+            .collection('users')
+            .where('email', '>=', rawSearch)
+            .where('email', '<=', rawSearch + '\uf8ff')
+            .limit(limit)
+            .get();
+          emailPrefixSnap.docs.forEach((doc: any) => matchedUserMap.set(doc.id, doc.data()));
+        }
+      } catch (e) {
+        console.warn('[Admin Search] Erro ao buscar por e-mail:', e);
+      }
+
+      // 3. Busca indexada por Nome de Exibição (displayName exato, capitalizado e normalizado em minúsculo)
+      try {
+        const capitalizedSearch = rawSearch.charAt(0).toUpperCase() + rawSearch.slice(1);
+        const [nameExactSnap, nameCapSnap, nameLowerSnap] = await Promise.all([
+          adminDb.collection('users').where('displayName', '>=', rawSearch).where('displayName', '<=', rawSearch + '\uf8ff').limit(limit).get(),
+          adminDb.collection('users').where('displayName', '>=', capitalizedSearch).where('displayName', '<=', capitalizedSearch + '\uf8ff').limit(limit).get(),
+          adminDb.collection('users').where('displayNameLower', '>=', search).where('displayNameLower', '<=', search + '\uf8ff').limit(limit).get(),
+        ]);
+        nameExactSnap.docs.forEach((doc: any) => matchedUserMap.set(doc.id, doc.data()));
+        nameCapSnap.docs.forEach((doc: any) => matchedUserMap.set(doc.id, doc.data()));
+        nameLowerSnap.docs.forEach((doc: any) => matchedUserMap.set(doc.id, doc.data()));
+      } catch (e) {
+        console.warn('[Admin Search] Erro ao buscar por displayName:', e);
+      }
+
+      // 4. Se nada foi encontrado em users, verificar se existe na coleção wallets
+      if (matchedUserMap.size === 0 && /^[a-zA-Z0-9:_-]{1,128}$/.test(rawSearch)) {
+        try {
+          const directWalletSnap = await adminDb.collection('wallets').doc(rawSearch).get();
+          if (directWalletSnap.exists) {
+            matchedUserMap.set(rawSearch, { uid: rawSearch });
+          }
+        } catch {}
+      }
+
+      const matchedUids = Array.from(matchedUserMap.keys()).slice(0, limit);
+      const walletSnaps = await Promise.all(
+        matchedUids.map((uid) => adminDb.collection('wallets').doc(uid).get())
+      );
+      const walletMap = new Map<string, any>();
+      walletSnaps.forEach((ws: any) => {
+        if (ws.exists) walletMap.set(ws.id, ws.data());
+      });
+
+      const users = matchedUids.map((uid) => {
+        const prof = matchedUserMap.get(uid) || {};
+        const wData = walletMap.get(uid) || {};
+        return {
+          uid,
+          email: prof.email || null,
+          displayName: prof.displayName || null,
+          photoURL: prof.photoURL || null,
+          authProvider: prof.authProvider || 'password',
+          emailVerified: !!prof.emailVerified,
+          balance: wData.balance || 0,
+          reserved: wData.reserved || 0,
+          promotionalGranted: wData.promotionalGranted || 0,
+          purchasedTotal: wData.purchasedTotal || 0,
+          manualGrantedTotal: wData.manualGrantedTotal || 0,
+          spentTotal: wData.spentTotal || 0,
+          debtAmount: wData.debtAmount || 0,
+          updatedAt: wData.updatedAt || prof.updatedAt || null,
+          hasWallet: walletMap.has(uid),
+          hasProfile: !!prof.createdAt || !!prof.email,
+        };
+      });
+
+      return res.json({
+        users,
+        hasMore: false,
+        nextCursor: null,
+      });
     }
 
-    // 2. Busca indexada direta por email exato (se contiver @)
-    if (search && search.includes('@')) {
-      const emailSnap = await adminDb.collection('users').where('email', '==', search).limit(5).get();
-      if (!emailSnap.empty) {
-        const uids = emailSnap.docs.map((d: any) => d.id);
-        const walletSnaps = await Promise.all(uids.map((u: string) => adminDb.collection('wallets').doc(u).get()));
-        const walletMap = new Map<string, any>();
-        walletSnaps.forEach((ws: any) => {
-          if (ws.exists) walletMap.set(ws.id, ws.data());
-        });
-
-        const users = emailSnap.docs.map((doc: any) => {
-          const uData = doc.data();
-          const wData = walletMap.get(doc.id) || {};
-          return {
-            uid: doc.id,
-            email: uData.email || null,
-            displayName: uData.displayName || null,
-            photoURL: uData.photoURL || null,
-            authProvider: uData.authProvider || 'password',
-            emailVerified: !!uData.emailVerified,
-            balance: wData.balance || 0,
-            reserved: wData.reserved || 0,
-            promotionalGranted: wData.promotionalGranted || 0,
-            purchasedTotal: wData.purchasedTotal || 0,
-            manualGrantedTotal: wData.manualGrantedTotal || 0,
-            spentTotal: wData.spentTotal || 0,
-            debtAmount: wData.debtAmount || 0,
-            updatedAt: wData.updatedAt || uData.updatedAt || null,
-            hasWallet: walletMap.has(doc.id),
-            hasProfile: true,
-          };
-        });
-
-        return res.json({
-          users,
-          hasMore: false,
-          nextCursor: null,
-        });
-      }
-    }
-
-    // 3. Paginação ordenada por UID na coleção users (com cursor startAfter)
+    // SEM BUSCA: Paginação Pura Ordenada por UID (__name__)
     let usersQuery: any = adminDb.collection('users').orderBy('__name__');
     if (startAfterUid) {
       usersQuery = usersQuery.startAfter(startAfterUid);
     }
-    // Fetch limit + 1 para saber se há próxima página
+    // Fetch limit + 1 para saber com certeza se há próxima página
     const usersSnap = await usersQuery.limit(limit + 1).get();
 
     const hasMoreUsers = usersSnap.docs.length > limit;
@@ -836,37 +930,28 @@ app.get('/api/admin/users', requireAdmin, async (req: any, res: Response) => {
     userUids.forEach((uid: string) => {
       const prof = userMap.get(uid) || {};
       const wData = walletMap.get(uid) || {};
-
-      const matchesSearch =
-        !search ||
-        uid.toLowerCase().includes(search) ||
-        (prof.email && prof.email.toLowerCase().includes(search)) ||
-        (prof.displayName && prof.displayName.toLowerCase().includes(search));
-
-      if (matchesSearch) {
-        mergedList.push({
-          uid,
-          email: prof.email || null,
-          displayName: prof.displayName || null,
-          photoURL: prof.photoURL || null,
-          authProvider: prof.authProvider || 'password',
-          emailVerified: !!prof.emailVerified,
-          balance: wData.balance || 0,
-          reserved: wData.reserved || 0,
-          promotionalGranted: wData.promotionalGranted || 0,
-          purchasedTotal: wData.purchasedTotal || 0,
-          manualGrantedTotal: wData.manualGrantedTotal || 0,
-          spentTotal: wData.spentTotal || 0,
-          debtAmount: wData.debtAmount || 0,
-          updatedAt: wData.updatedAt || prof.updatedAt || null,
-          hasWallet: walletMap.has(uid),
-          hasProfile: true,
-        });
-      }
+      mergedList.push({
+        uid,
+        email: prof.email || null,
+        displayName: prof.displayName || null,
+        photoURL: prof.photoURL || null,
+        authProvider: prof.authProvider || 'password',
+        emailVerified: !!prof.emailVerified,
+        balance: wData.balance || 0,
+        reserved: wData.reserved || 0,
+        promotionalGranted: wData.promotionalGranted || 0,
+        purchasedTotal: wData.purchasedTotal || 0,
+        manualGrantedTotal: wData.manualGrantedTotal || 0,
+        spentTotal: wData.spentTotal || 0,
+        debtAmount: wData.debtAmount || 0,
+        updatedAt: wData.updatedAt || prof.updatedAt || null,
+        hasWallet: walletMap.has(uid),
+        hasProfile: true,
+      });
     });
 
-    // Se a coleção users estiver vazia, buscar carteiras com paginação
-    if (mergedList.length === 0 && !search && !startAfterUid) {
+    // Se a coleção users estiver vazia e for primeira página, buscar diretamente em wallets
+    if (mergedList.length === 0 && !startAfterUid) {
       const walletsSnap = await adminDb.collection('wallets').orderBy('__name__').limit(limit).get();
       walletsSnap.forEach((doc: any) => {
         const wData = doc.data();

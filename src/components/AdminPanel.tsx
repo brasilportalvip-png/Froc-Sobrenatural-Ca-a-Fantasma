@@ -23,6 +23,8 @@ import {
   MinusCircle,
   FileText,
   Sliders,
+  X,
+  Loader2,
 } from 'lucide-react';
 
 interface AdminPanelProps {
@@ -45,6 +47,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onBackToApp, onOpenAuth 
   const [usersList, setUsersList] = useState<any[]>([]);
   const [searchTerm, setSearchTerm] = useState('');
   const [loadingUsers, setLoadingUsers] = useState(false);
+  const [usersError, setUsersError] = useState<string | null>(null);
   const [hasNextUsersPage, setHasNextUsersPage] = useState(false);
   const [nextUsersCursor, setNextUsersCursor] = useState<string | null>(null);
   const [cursorHistory, setCursorHistory] = useState<string[]>([]);
@@ -97,13 +100,15 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onBackToApp, onOpenAuth 
     }
   };
 
-  const loadUsers = async (cursor?: string | null, isNext = false) => {
+  const loadUsers = async (cursor?: string | null, isNext = false, termToUse?: string) => {
     try {
       setLoadingUsers(true);
+      setUsersError(null);
       const token = await getIdToken();
       if (!token) return;
 
-      let url = `/api/admin/users?limit=25&search=${encodeURIComponent(searchTerm)}`;
+      const activeTerm = termToUse !== undefined ? termToUse : searchTerm;
+      let url = `/api/admin/users?limit=25&search=${encodeURIComponent(activeTerm.trim())}`;
       if (cursor) {
         url += `&startAfter=${encodeURIComponent(cursor)}`;
       }
@@ -127,12 +132,27 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onBackToApp, onOpenAuth 
             setCursorHistory([]);
           }
         }
+      } else {
+        const errData = await res.json().catch(() => ({}));
+        setUsersError(errData.error || 'Erro ao carregar lista de usuários.');
       }
-    } catch (err) {
+    } catch (err: any) {
       console.warn('[AdminPanel] Erro ao carregar usuários:', err);
+      setUsersError('Falha de conexão com o servidor ao consultar usuários.');
     } finally {
       setLoadingUsers(false);
     }
+  };
+
+  const handleSearch = (term?: string) => {
+    setCursorHistory([]);
+    loadUsers(null, false, term !== undefined ? term : searchTerm);
+  };
+
+  const handleClearSearch = () => {
+    setSearchTerm('');
+    setCursorHistory([]);
+    loadUsers(null, false, '');
   };
 
   const fetchTargetWallet = async (uidToFetch: string) => {
@@ -490,88 +510,161 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onBackToApp, onOpenAuth 
       {/* 2. USUÁRIOS & CARTEIRAS */}
       {activeTab === 'users' && (
         <div className="space-y-4">
-          <div className="flex gap-2">
-            <div className="relative flex-1">
-              <Search className="w-4 h-4 text-slate-500 absolute left-3 top-3" />
-              <input
-                type="text"
-                placeholder="Buscar por UID, E-mail ou Nome..."
-                value={searchTerm}
-                onChange={(e) => setSearchTerm(e.target.value)}
-                onKeyDown={(e) => e.key === 'Enter' && loadUsers()}
-                className="w-full bg-[#081120] border border-slate-800 rounded-lg pl-9 pr-3 py-2 text-xs font-mono text-slate-200 focus:border-cyan-500 outline-none"
-              />
+          <div className="space-y-1.5">
+            <div className="flex gap-2">
+              <div className="relative flex-1">
+                <Search className="w-4 h-4 text-slate-500 absolute left-3 top-3" />
+                <input
+                  type="text"
+                  placeholder="Buscar por UID exato, E-mail ou Nome (prefixo)..."
+                  value={searchTerm}
+                  onChange={(e) => setSearchTerm(e.target.value)}
+                  onKeyDown={(e) => e.key === 'Enter' && handleSearch()}
+                  className="w-full bg-[#081120] border border-slate-800 rounded-lg pl-9 pr-8 py-2 text-xs font-mono text-slate-200 focus:border-cyan-500 outline-none"
+                />
+                {searchTerm && (
+                  <button
+                    onClick={handleClearSearch}
+                    title="Limpar busca"
+                    className="absolute right-2.5 top-2.5 text-slate-500 hover:text-slate-300 transition cursor-pointer"
+                  >
+                    <X className="w-4 h-4" />
+                  </button>
+                )}
+              </div>
+              <button
+                onClick={() => handleSearch()}
+                disabled={loadingUsers}
+                className="px-4 py-2 bg-cyan-950 hover:bg-cyan-900 border border-cyan-500/50 text-cyan-300 text-xs font-mono rounded-lg cursor-pointer flex items-center gap-1.5 disabled:opacity-50"
+              >
+                {loadingUsers ? (
+                  <>
+                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                    <span>Buscando...</span>
+                  </>
+                ) : (
+                  <span>Buscar</span>
+                )}
+              </button>
+              {searchTerm && (
+                <button
+                  onClick={handleClearSearch}
+                  disabled={loadingUsers}
+                  className="px-3 py-2 bg-slate-900 hover:bg-slate-800 border border-slate-700 text-slate-400 text-xs font-mono rounded-lg cursor-pointer"
+                >
+                  Limpar
+                </button>
+              )}
             </div>
-            <button
-              onClick={() => loadUsers()}
-              className="px-4 py-2 bg-cyan-950 hover:bg-cyan-900 border border-cyan-500/50 text-cyan-300 text-xs font-mono rounded-lg cursor-pointer"
-            >
-              Buscar
-            </button>
+            <p className="text-[11px] text-slate-500 font-mono">
+              Busca global indexada por UID, E-mail ou Prefixo de Nome. Busca direta em todo o banco Firestore.
+            </p>
           </div>
 
-          <div className="bg-[#070d18] border border-slate-800 rounded-xl overflow-x-auto">
-            <table className="w-full text-left text-xs font-mono border-collapse">
-              <thead>
-                <tr className="border-b border-slate-800 text-slate-400 bg-slate-900/50">
-                  <th className="py-2.5 px-3">Usuário &amp; Identidade</th>
-                  <th className="py-2.5 px-3">Provedor / Status</th>
-                  <th className="py-2.5 px-3 text-right">Saldo</th>
-                  <th className="py-2.5 px-3 text-right">Reservado</th>
-                  <th className="py-2.5 px-3 text-right">Promocional</th>
-                  <th className="py-2.5 px-3 text-right">Comprados</th>
-                  <th className="py-2.5 px-3 text-center">Ações</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-900">
-                {usersList.map((u) => (
-                  <tr key={u.uid} className="hover:bg-slate-900/40 transition">
-                    <td className="py-2.5 px-3 font-mono">
-                      <div className="text-cyan-300 font-bold">{u.displayName || u.email || 'Sem nome'}</div>
-                      <div className="text-[10px] text-slate-400 select-all">{u.uid}</div>
-                      {u.email && u.displayName && <div className="text-[10px] text-slate-500">{u.email}</div>}
-                    </td>
-                    <td className="py-2.5 px-3 font-mono">
-                      <div className="flex items-center gap-1.5">
-                        <span className="uppercase text-[10px] px-1.5 py-0.5 rounded bg-slate-800 border border-slate-700 text-slate-300">
-                          {u.authProvider || 'pwd'}
-                        </span>
-                        {u.emailVerified ? (
-                          <span className="text-emerald-400 text-[10px]" title="E-mail verificado">✓</span>
-                        ) : (
-                          <span className="text-amber-400 text-[10px]" title="E-mail não verificado">⚠</span>
-                        )}
-                      </div>
-                      <div className="text-[10px] text-slate-500">
-                        {u.hasWallet ? 'Carteira OK' : 'Sem carteira'}
-                      </div>
-                    </td>
-                    <td className="py-2.5 px-3 text-right text-emerald-400 font-bold">{u.balance}</td>
-                    <td className="py-2.5 px-3 text-right text-amber-400">{u.reserved}</td>
-                    <td className="py-2.5 px-3 text-right text-slate-300">{u.promotionalGranted}</td>
-                    <td className="py-2.5 px-3 text-right text-blue-300">{u.purchasedTotal}</td>
-                    <td className="py-2.5 px-3 text-center">
-                      <button
-                        onClick={() => {
-                          setTargetUid(u.uid);
-                          fetchTargetWallet(u.uid);
-                          setActiveTab('adjust');
-                        }}
-                        className="px-2.5 py-1 bg-cyan-950 hover:bg-cyan-900 border border-cyan-500/50 text-[10px] text-cyan-300 rounded cursor-pointer transition"
-                      >
-                        Ajustar Créditos
-                      </button>
-                    </td>
+          {usersError && (
+            <div className="p-3 bg-rose-950/40 border border-rose-500/40 rounded-lg flex items-center justify-between text-xs font-mono text-rose-300">
+              <div className="flex items-center gap-2">
+                <AlertTriangle className="w-4 h-4 text-rose-400 shrink-0" />
+                <span>{usersError}</span>
+              </div>
+              <button
+                onClick={() => handleSearch()}
+                className="px-2 py-1 bg-rose-900/60 hover:bg-rose-800 text-[11px] text-rose-200 rounded cursor-pointer"
+              >
+                Tentar Novamente
+              </button>
+            </div>
+          )}
+
+          {loadingUsers && usersList.length === 0 ? (
+            <div className="bg-[#070d18] border border-slate-800 rounded-xl p-8 text-center space-y-2">
+              <Loader2 className="w-6 h-6 text-cyan-400 animate-spin mx-auto" />
+              <p className="text-xs font-mono text-slate-400">Consultando base de dados Firestore...</p>
+            </div>
+          ) : usersList.length === 0 ? (
+            <div className="bg-[#070d18] border border-slate-800 rounded-xl p-8 text-center space-y-3">
+              <p className="text-sm font-mono text-slate-300">Nenhum usuário localizado.</p>
+              <p className="text-xs font-mono text-slate-500">
+                {searchTerm
+                  ? `Nenhum registro corresponde ao critério "${searchTerm}".`
+                  : 'Nenhum usuário ou carteira registrado na base de dados.'}
+              </p>
+              {searchTerm && (
+                <button
+                  onClick={handleClearSearch}
+                  className="px-3 py-1.5 bg-cyan-950 hover:bg-cyan-900 border border-cyan-500/40 text-xs font-mono text-cyan-300 rounded cursor-pointer transition"
+                >
+                  Limpar Busca e Ver Todos
+                </button>
+              )}
+            </div>
+          ) : (
+            <div className="bg-[#070d18] border border-slate-800 rounded-xl overflow-x-auto">
+              <table className="w-full text-left text-xs font-mono border-collapse">
+                <thead>
+                  <tr className="border-b border-slate-800 text-slate-400 bg-slate-900/50">
+                    <th className="py-2.5 px-3">Usuário &amp; Identidade</th>
+                    <th className="py-2.5 px-3">Provedor / Status</th>
+                    <th className="py-2.5 px-3 text-right">Saldo</th>
+                    <th className="py-2.5 px-3 text-right">Reservado</th>
+                    <th className="py-2.5 px-3 text-right">Promocional</th>
+                    <th className="py-2.5 px-3 text-right">Comprados</th>
+                    <th className="py-2.5 px-3 text-center">Ações</th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+                </thead>
+                <tbody className="divide-y divide-slate-900">
+                  {usersList.map((u) => (
+                    <tr key={u.uid} className="hover:bg-slate-900/40 transition">
+                      <td className="py-2.5 px-3 font-mono">
+                        <div className="text-cyan-300 font-bold">{u.displayName || u.email || 'Sem nome'}</div>
+                        <div className="text-[10px] text-slate-400 select-all">{u.uid}</div>
+                        {u.email && u.displayName && <div className="text-[10px] text-slate-500">{u.email}</div>}
+                      </td>
+                      <td className="py-2.5 px-3 font-mono">
+                        <div className="flex items-center gap-1.5">
+                          <span className="uppercase text-[10px] px-1.5 py-0.5 rounded bg-slate-800 border border-slate-700 text-slate-300">
+                            {u.authProvider || 'pwd'}
+                          </span>
+                          {u.emailVerified ? (
+                            <span className="text-emerald-400 text-[10px]" title="E-mail verificado">✓</span>
+                          ) : (
+                            <span className="text-amber-400 text-[10px]" title="E-mail não verificado">⚠</span>
+                          )}
+                        </div>
+                        <div className="text-[10px] text-slate-500">
+                          {u.hasWallet ? 'Carteira OK' : 'Sem carteira'}
+                        </div>
+                      </td>
+                      <td className="py-2.5 px-3 text-right text-emerald-400 font-bold">{u.balance}</td>
+                      <td className="py-2.5 px-3 text-right text-amber-400">{u.reserved}</td>
+                      <td className="py-2.5 px-3 text-right text-slate-300">{u.promotionalGranted}</td>
+                      <td className="py-2.5 px-3 text-right text-blue-300">{u.purchasedTotal}</td>
+                      <td className="py-2.5 px-3 text-center">
+                        <button
+                          onClick={() => {
+                            setTargetUid(u.uid);
+                            fetchTargetWallet(u.uid);
+                            setActiveTab('adjust');
+                          }}
+                          className="px-2.5 py-1 bg-cyan-950 hover:bg-cyan-900 border border-cyan-500/50 text-[10px] text-cyan-300 rounded cursor-pointer transition"
+                        >
+                          Ajustar Créditos
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
 
           {/* Paginação do Usuários */}
           <div className="flex items-center justify-between pt-2 px-1 text-xs font-mono text-slate-400">
             <div>
               Exibindo <span className="text-cyan-300 font-bold">{usersList.length}</span> registros nesta página
+              {cursorHistory.length > 0 && (
+                <span className="ml-2 text-slate-500">(Página {cursorHistory.length + 1})</span>
+              )}
             </div>
             <div className="flex gap-2">
               <button
