@@ -40,6 +40,7 @@ interface Props {
   onUpdateEvidenceDecision?: (evidenceId: string, status: 'interference_marked' | 'confirmed_candidate' | 'discarded') => Promise<void>;
   onNavigateTab?: (tab: any) => void;
   onOpenWallet?: () => void;
+  onOpenAuth?: () => void;
   hasAudioPermission: boolean;
   onRequestMicPermission: () => Promise<void>;
   hasGemini: boolean;
@@ -59,6 +60,7 @@ export const CommunicationModule: React.FC<Props> = ({
   onUpdateEvidenceDecision,
   onNavigateTab,
   onOpenWallet,
+  onOpenAuth,
   hasAudioPermission,
   onRequestMicPermission,
   hasGemini,
@@ -163,6 +165,15 @@ export const CommunicationModule: React.FC<Props> = ({
   const handleSendAssistant = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!assistantInput.trim() || isAssistantThinking) return;
+
+    if (!user) {
+      if (onOpenAuth) {
+        onOpenAuth();
+      } else if (onOpenWallet) {
+        onOpenWallet();
+      }
+      return;
+    }
 
     const userMsg = assistantInput.trim();
     setAssistantInput('');

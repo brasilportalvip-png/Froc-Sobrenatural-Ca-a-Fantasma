@@ -43,6 +43,7 @@ export const UserPanel: React.FC<UserPanelProps> = ({
     refreshWallet,
     claimFreeBonus,
     sendVerificationEmail,
+    reloadUser,
     logoutUser,
     getIdToken,
   } = useAuth();
@@ -53,8 +54,10 @@ export const UserPanel: React.FC<UserPanelProps> = ({
 
   const [orders, setOrders] = useState<OrderItem[]>([]);
   const [loadingOrders, setLoadingOrders] = useState(false);
+  const [ordersError, setOrdersError] = useState<string | null>(null);
   const [localSessions, setLocalSessions] = useState<Session[]>([]);
   const [claimingBonus, setClaimingBonus] = useState(false);
+  const [checkingVerification, setCheckingVerification] = useState(false);
   const [bonusFeedback, setBonusFeedback] = useState<{ message: string; isError: boolean } | null>(
     null
   );
@@ -71,18 +74,22 @@ export const UserPanel: React.FC<UserPanelProps> = ({
   const loadOrders = async () => {
     try {
       setLoadingOrders(true);
+      setOrdersError(null);
       const token = await getIdToken();
       if (!token) return;
 
       const res = await fetch('/api/user/orders', {
         headers: { Authorization: `Bearer ${token}` },
       });
+      const data = await res.json();
       if (res.ok) {
-        const data = await res.json();
         setOrders(data);
+      } else {
+        setOrdersError(data.error || 'Não foi possível carregar os pedidos.');
       }
-    } catch (err) {
+    } catch (err: any) {
       console.warn('[UserPanel] Erro ao carregar pedidos:', err);
+      setOrdersError(err.message || 'Erro de conexão ao carregar pedidos.');
     } finally {
       setLoadingOrders(false);
     }
@@ -123,6 +130,17 @@ export const UserPanel: React.FC<UserPanelProps> = ({
       setTimeout(() => setVerificationSent(false), 8000);
     } catch (err: any) {
       alert(err.message || 'Erro ao enviar e-mail de verificação.');
+    }
+  };
+
+  const handleCheckVerification = async () => {
+    try {
+      setCheckingVerification(true);
+      await reloadUser();
+    } catch (err: any) {
+      console.warn('[UserPanel] Erro ao recarregar status de verificação:', err);
+    } finally {
+      setCheckingVerification(false);
     }
   };
 
@@ -261,13 +279,23 @@ export const UserPanel: React.FC<UserPanelProps> = ({
                   </p>
                 </div>
               </div>
-              <button
-                onClick={handleSendVerification}
-                disabled={verificationSent}
-                className="px-3 py-1.5 bg-amber-900/60 hover:bg-amber-800/80 border border-amber-500/50 text-amber-200 text-xs font-mono rounded cursor-pointer transition shrink-0"
-              >
-                {verificationSent ? 'Link Reenviado!' : 'Reenviar E-mail'}
-              </button>
+              <div className="flex items-center gap-2 shrink-0">
+                <button
+                  onClick={handleCheckVerification}
+                  disabled={checkingVerification}
+                  className="px-3 py-1.5 bg-emerald-950 hover:bg-emerald-900 border border-emerald-500/50 text-emerald-200 text-xs font-mono rounded cursor-pointer transition flex items-center gap-1"
+                >
+                  <RefreshCw className={`w-3 h-3 ${checkingVerification ? 'animate-spin' : ''}`} />
+                  <span>{checkingVerification ? 'Verificando...' : 'Já confirmei'}</span>
+                </button>
+                <button
+                  onClick={handleSendVerification}
+                  disabled={verificationSent}
+                  className="px-3 py-1.5 bg-amber-900/60 hover:bg-amber-800/80 border border-amber-500/50 text-amber-200 text-xs font-mono rounded cursor-pointer transition"
+                >
+                  {verificationSent ? 'Link Reenviado!' : 'Reenviar E-mail'}
+                </button>
+              </div>
             </div>
           )}
 
@@ -509,6 +537,12 @@ export const UserPanel: React.FC<UserPanelProps> = ({
                 <span>{loadingOrders ? 'Atualizando...' : 'Recarregar'}</span>
               </button>
             </div>
+
+            {ordersError && (
+              <div className="mb-4 p-3 bg-rose-950/40 border border-rose-500/50 rounded-lg text-rose-300 text-xs font-mono">
+                {ordersError}
+              </div>
+            )}
 
             {orders.length === 0 ? (
               <div className="py-12 text-center text-slate-500 font-mono text-xs">

@@ -127,27 +127,32 @@ export function handleDbError(err: any, res: Response, fallbackMessage: string) 
   return res.status(500).json({ error: fallbackMessage });
 }
 
-// 1. Health & Status endpoint (sempre JSON para verificações e monitoramento)
+// 1. Health & Status endpoint (seguro, informativo e sem expor segredos internos)
 app.get('/api/status', (_req: Request, res: Response) => {
+  const firebaseReady = isFirebaseAdminConfigured();
+  const geminiReady = !!apiKey && !!ai;
+  const mpReady = !!process.env.MERCADO_PAGO_ACCESS_TOKEN;
+
+  // Status global honesto: 'ready' se os serviços centrais estiverem operacionais
+  const isReady = firebaseReady && geminiReady;
+
   res.json({
-    status: 'online',
-    appName: 'Froc Sobrenatural Caça Fantasma',
-    hasGemini: !!apiKey && !!ai,
-    hasMercadoPago: !!process.env.MERCADO_PAGO_ACCESS_TOKEN,
-    hasFirebaseAdmin: isFirebaseAdminConfigured(),
-    modelCascade: ['gemini-3.8-flash', 'gemini-3.7-flash', 'gemini-3.6-flash'],
-    pricingConfigured: {
-      p50: parseInt(process.env.PACKAGE_50_PRICE_CENTS || '0', 10) > 0,
-      p75: parseInt(process.env.PACKAGE_75_PRICE_CENTS || '0', 10) > 0,
-      p100: parseInt(process.env.PACKAGE_100_PRICE_CENTS || '0', 10) > 0,
+    status: isReady ? 'ready' : 'degraded',
+    service: 'froc-sobrenatural-api',
+    version: '1.0.0',
+    timestamp: new Date().toISOString(),
+    services: {
+      geminiAi: geminiReady ? 'operational' : 'unavailable',
+      firestoreAdmin: firebaseReady ? 'operational' : 'unauthenticated',
+      mercadoPago: mpReady ? 'operational' : 'unconfigured',
     },
     features: {
-      audioAnalysis: true,
-      investigationChat: true,
-      blindTestVerification: true,
+      audioAnalysis: geminiReady,
+      investigationChat: geminiReady,
+      blindTestVerification: geminiReady,
       evidenceLogging: true,
-      walletAndCredits: true,
-      mercadoPagoCheckoutPro: true,
+      walletAndCredits: firebaseReady,
+      mercadoPagoCheckoutPro: mpReady,
     },
   });
 });
@@ -803,3 +808,12 @@ app.get('/api/admin/audit-logs', requireAdmin, async (_req: any, res: Response) 
     return handleDbError(err, res, 'Erro ao buscar logs de auditoria.');
   }
 });
+
+// Fallback JSON explícito para qualquer rota /api/* inexistente
+app.all('/api/*', (_req: Request, res: Response) => {
+  res.status(404).json({
+    error: 'Endpoint da API não encontrado.',
+    code: 'NOT_FOUND',
+  });
+});
+

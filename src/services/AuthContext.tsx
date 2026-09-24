@@ -28,6 +28,7 @@ interface AuthContextType {
   logoutUser: () => Promise<void>;
   sendVerificationEmail: () => Promise<void>;
   sendPasswordReset: (email: string) => Promise<void>;
+  reloadUser: () => Promise<void>;
   getIdToken: () => Promise<string | null>;
 }
 
@@ -182,6 +183,15 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     await sendPasswordResetEmail(auth, email);
   };
 
+  const reloadUser = async () => {
+    if (auth.currentUser) {
+      await auth.currentUser.reload();
+      setUser({ ...auth.currentUser });
+      await refreshWallet();
+      await checkAdminRole();
+    }
+  };
+
   useEffect(() => {
     fetchPackages();
 
@@ -218,6 +228,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         logoutUser,
         sendVerificationEmail,
         sendPasswordReset,
+        reloadUser,
         getIdToken,
       }}
     >

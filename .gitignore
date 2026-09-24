@@ -6,4 +6,13 @@ coverage/
 *.log
 .env*
 !.env.example
+
+# Chaves de credenciais e contas de serviço do Firebase / GCP
+*service-account*.json
+*service_account*.json
+*serviceAccount*.json
+*firebase-adminsdk*.json
+*google-credentials*.json
+*.key.json
+*.credentials.json
 firebase-service-account.json

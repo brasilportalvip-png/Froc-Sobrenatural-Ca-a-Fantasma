@@ -63,13 +63,13 @@ function callApp(options: { method: string; path: string; headers?: Record<strin
   });
 }
 
-test('1. GET /api/status returns JSON and 200 with honest model cascade', async () => {
+test('1. GET /api/status returns JSON and 200 with honest service status', async () => {
   const res = await callApp({ method: 'GET', path: '/api/status' });
   assert.equal(res.status, 200);
   assert.equal(typeof res.body, 'object');
-  assert.equal(res.body.status, 'online');
-  assert.deepEqual(res.body.modelCascade, ['gemini-3.8-flash', 'gemini-3.7-flash', 'gemini-3.6-flash']);
-  assert.equal(typeof res.body.pricingConfigured.p50, 'boolean');
+  assert.equal(res.body.service, 'froc-sobrenatural-api');
+  assert.equal(typeof res.body.services, 'object');
+  assert.equal(typeof res.body.features, 'object');
 });
 
 test('2. GET /api/packages returns JSON array with 3 packages', async () => {
@@ -149,6 +149,42 @@ test('9. Security: Admin adjustment /api/admin/credits/adjust rejects anonymous 
       reason: 'Teste sem autenticação',
       idempotencyKey: 'idemp-test-anon',
     },
+  });
+  assert.equal(res.status, 401);
+});
+
+test('10. Reliability: Non-existent API route /api/rota-inexistente returns 404 JSON', async () => {
+  const res = await callApp({
+    method: 'GET',
+    path: '/api/rota-inexistente',
+  });
+  assert.equal(res.status, 404);
+  assert.equal(typeof res.body, 'object');
+  assert.equal(res.body.code, 'NOT_FOUND');
+  assert.match(res.headers['content-type'], /application\/json/);
+});
+
+test('11. Security: POST /api/wallet/claim-free rejects unauthenticated requests with 401', async () => {
+  const res = await callApp({
+    method: 'POST',
+    path: '/api/wallet/claim-free',
+  });
+  assert.equal(res.status, 401);
+});
+
+test('12. Security: POST /api/orders/create rejects unauthenticated requests with 401', async () => {
+  const res = await callApp({
+    method: 'POST',
+    path: '/api/orders/create',
+    body: { packageId: 'pack_50' },
+  });
+  assert.equal(res.status, 401);
+});
+
+test('13. Security: GET /api/user/role rejects unauthenticated requests with 401', async () => {
+  const res = await callApp({
+    method: 'GET',
+    path: '/api/user/role',
   });
   assert.equal(res.status, 401);
 });

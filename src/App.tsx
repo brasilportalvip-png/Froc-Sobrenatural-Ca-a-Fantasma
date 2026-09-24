@@ -140,7 +140,8 @@ export default function App() {
     fetch('/api/status')
       .then((res) => res.json())
       .then((data) => {
-        setHasGemini(!!data.hasGemini);
+        const isGeminiAvailable = !!data.hasGemini || data.services?.geminiAi === 'operational';
+        setHasGemini(isGeminiAvailable);
       })
       .catch(() => {
         setHasGemini(false);
@@ -304,6 +305,11 @@ export default function App() {
     question: string,
     candidateBlob?: Blob
   ): Promise<EvidenceItem | null> => {
+    if (!user) {
+      setIsAuthModalOpen(true);
+      return null;
+    }
+
     let currentSession = activeSession;
 
     // Auto-create session if user submits question directly
@@ -827,6 +833,7 @@ export default function App() {
             onUpdateEvidenceDecision={handleUpdateEvidenceDecision}
             onNavigateTab={(tab) => setActiveTab(tab)}
             onOpenWallet={() => setIsWalletModalOpen(true)}
+            onOpenAuth={() => setIsAuthModalOpen(true)}
             hasAudioPermission={hasAudioPermission}
             onRequestMicPermission={requestMicPermission}
             hasGemini={hasGemini}
