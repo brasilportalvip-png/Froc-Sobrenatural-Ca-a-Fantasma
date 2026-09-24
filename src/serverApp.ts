@@ -2,7 +2,7 @@ import express, { Request, Response } from 'express';
 import dotenv from 'dotenv';
 import crypto from 'crypto';
 import { GoogleGenAI } from '@google/genai';
-import { adminAuth, adminDb } from './services/firebaseAdmin';
+import { adminAuth, adminDb, isFirebaseAdminConfigured } from './services/firebaseAdmin';
 import {
   getOrCreateWallet,
   claimFreeGrant,
@@ -103,6 +103,30 @@ if (apiKey) {
   }
 }
 
+// Helper centralizado para tratar erros do Firestore/DB com mensagens acionáveis
+export function handleDbError(err: any, res: Response, fallbackMessage: string) {
+  const isAuthError =
+    err?.code === 16 ||
+    err?.message?.includes('UNAUTHENTICATED') ||
+    err?.details?.includes('UNAUTHENTICATED') ||
+    err?.message?.includes('invalid authentication credentials');
+
+  if (isAuthError) {
+    console.error(
+      '[Firestore Auth] ERRO 16 UNAUTHENTICATED: O backend na Vercel não possui credenciais válidas da Service Account do Firebase.',
+      'Configure a variável FIREBASE_SERVICE_ACCOUNT_KEY no painel da Vercel (Settings -> Environment Variables).'
+    );
+    return res.status(503).json({
+      error: 'Autenticação com o banco de dados pendente de configuração (FIREBASE_SERVICE_ACCOUNT_KEY).',
+      code: 'FIRESTORE_UNAUTHENTICATED',
+      details: 'Configure a variável FIREBASE_SERVICE_ACCOUNT_KEY no dashboard da Vercel para habilitar Firestore e Carteira.',
+    });
+  }
+
+  console.error(`[API Error] ${fallbackMessage}:`, err);
+  return res.status(500).json({ error: fallbackMessage });
+}
+
 // 1. Health & Status endpoint (sempre JSON para verificações e monitoramento)
 app.get('/api/status', (_req: Request, res: Response) => {
   res.json({
@@ -110,6 +134,7 @@ app.get('/api/status', (_req: Request, res: Response) => {
     appName: 'Froc Sobrenatural Caça Fantasma',
     hasGemini: !!apiKey && !!ai,
     hasMercadoPago: !!process.env.MERCADO_PAGO_ACCESS_TOKEN,
+    hasFirebaseAdmin: isFirebaseAdminConfigured(),
     modelCascade: ['gemini-3.8-flash', 'gemini-3.7-flash', 'gemini-3.6-flash'],
     pricingConfigured: {
       p50: parseInt(process.env.PACKAGE_50_PRICE_CENTS || '0', 10) > 0,
@@ -148,8 +173,7 @@ app.get('/api/wallet', authenticateFirebaseUser, async (req: any, res: Response)
       ledger,
     });
   } catch (err: any) {
-    console.error('[API /api/wallet] Erro:', err);
-    res.status(500).json({ error: 'Erro ao carregar carteira no servidor.' });
+    return handleDbError(err, res, 'Erro ao carregar carteira no servidor.');
   }
 });
 
@@ -163,8 +187,7 @@ app.post('/api/wallet/claim-free', authenticateFirebaseUser, async (req: any, re
     const result = await claimFreeGrant(uid, email, emailVerified);
     res.json(result);
   } catch (err: any) {
-    console.error('[API /api/wallet/claim-free] Erro:', err);
-    res.status(500).json({ error: 'Erro ao processar bônus gratuito.' });
+    return handleDbError(err, res, 'Erro ao processar bônus gratuito.');
   }
 });
 
@@ -553,8 +576,7 @@ app.get('/api/user/orders', authenticateFirebaseUser, async (req: any, res: Resp
 
     res.json(orders);
   } catch (err: any) {
-    console.error('[API /api/user/orders] Erro:', err);
-    res.status(500).json({ error: 'Erro ao buscar histórico de pedidos.' });
+    return handleDbError(err, res, 'Erro ao buscar histórico de pedidos.');
   }
 });
 
@@ -638,8 +660,7 @@ app.get('/api/admin/overview', requireAdmin, async (_req: any, res: Response) =>
       },
     });
   } catch (err: any) {
-    console.error('[Admin Overview] Erro:', err);
-    res.status(500).json({ error: 'Erro ao compilar visão geral do sistema.' });
+    return handleDbError(err, res, 'Erro ao compilar visão geral do sistema.');
   }
 });
 
@@ -672,8 +693,7 @@ app.get('/api/admin/users', requireAdmin, async (req: any, res: Response) => {
 
     res.json(users);
   } catch (err: any) {
-    console.error('[Admin Users] Erro:', err);
-    res.status(500).json({ error: 'Erro ao listar usuários.' });
+    return handleDbError(err, res, 'Erro ao listar usuários.');
   }
 });
 
@@ -700,8 +720,7 @@ app.get('/api/admin/users/:uid/wallet', requireAdmin, async (req: any, res: Resp
       ledger,
     });
   } catch (err: any) {
-    console.error('[Admin User Wallet] Erro:', err);
-    res.status(500).json({ error: 'Erro ao carregar carteira do usuário alvo.' });
+    return handleDbError(err, res, 'Erro ao carregar carteira do usuário alvo.');
   }
 });
 
@@ -742,6 +761,9 @@ app.post('/api/admin/credits/adjust', requireAdmin, async (req: any, res: Respon
 
     res.json(result);
   } catch (err: any) {
+    if (err?.code === 16 || err?.message?.includes('UNAUTHENTICATED')) {
+      return handleDbError(err, res, 'Erro ao processar ajuste de créditos.');
+    }
     console.error('[Admin Adjust Credits] Erro:', err);
     if (err.statusCode === 409 || err.message?.includes('Conflito de Idempotência')) {
       return res.status(409).json({ error: err.message });
@@ -762,8 +784,7 @@ app.get('/api/admin/orders', requireAdmin, async (_req: any, res: Response) => {
     const orders = ordersSnap.docs.map((d: any) => ({ id: d.id, ...d.data() }));
     res.json(orders);
   } catch (err: any) {
-    console.error('[Admin Orders] Erro:', err);
-    res.status(500).json({ error: 'Erro ao buscar pedidos no servidor.' });
+    return handleDbError(err, res, 'Erro ao buscar pedidos no servidor.');
   }
 });
 
@@ -779,7 +800,6 @@ app.get('/api/admin/audit-logs', requireAdmin, async (_req: any, res: Response) 
     const logs = logsSnap.docs.map((d: any) => ({ id: d.id, ...d.data() }));
     res.json(logs);
   } catch (err: any) {
-    console.error('[Admin Audit Logs] Erro:', err);
-    res.status(500).json({ error: 'Erro ao buscar logs de auditoria.' });
+    return handleDbError(err, res, 'Erro ao buscar logs de auditoria.');
   }
 });

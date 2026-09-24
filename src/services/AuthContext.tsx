@@ -133,6 +133,12 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         },
       });
       const data = await res.json();
+      if (!res.ok) {
+        return {
+          success: false,
+          message: data.error || data.details || 'Falha ao processar bônus gratuito.',
+        };
+      }
       await refreshWallet();
       return {
         success: data.success,
