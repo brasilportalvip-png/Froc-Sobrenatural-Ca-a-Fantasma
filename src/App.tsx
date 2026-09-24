@@ -117,6 +117,47 @@ export default function App() {
   // Server & AI Status
   const [hasGemini, setHasGemini] = useState(false);
 
+  // Sincronizar metadados dinâmicos de SEO e rotas da SPA
+  useEffect(() => {
+    const metaDesc = document.querySelector('meta[name="description"]');
+    const metaRobots = document.querySelector('meta[name="robots"]');
+    const canonicalLink = document.querySelector('link[rel="canonical"]');
+
+    const BASE_URL = 'https://froc-sobrenatural-ca-a-fantasma.vercel.app';
+
+    if (activeTab === 'privacy') {
+      document.title = 'Política de Privacidade | Froc Sobrenatural Caça Fantasma';
+      if (metaDesc) metaDesc.setAttribute('content', 'Política de Privacidade, tratamento de dados e diretrizes de conformidade LGPD da estação Froc Sobrenatural.');
+      if (metaRobots) metaRobots.setAttribute('content', 'index, follow');
+      if (canonicalLink) canonicalLink.setAttribute('href', `${BASE_URL}/politica-de-privacidade`);
+    } else if (activeTab === 'terms') {
+      document.title = 'Termos de Uso e Serviço | Froc Sobrenatural Caça Fantasma';
+      if (metaDesc) metaDesc.setAttribute('content', 'Termos e Condições de Uso, mecânica de créditos periciais e garantias técnicas da estação Froc Sobrenatural.');
+      if (metaRobots) metaRobots.setAttribute('content', 'index, follow');
+      if (canonicalLink) canonicalLink.setAttribute('href', `${BASE_URL}/termos-de-uso`);
+    } else if (activeTab === 'painel') {
+      document.title = 'Painel do Investigador | Froc Sobrenatural';
+      if (metaDesc) metaDesc.setAttribute('content', 'Área restrita de gestão de créditos, recargas e histórico de consultas periciais.');
+      if (metaRobots) metaRobots.setAttribute('content', 'noindex, nofollow');
+      if (canonicalLink) canonicalLink.setAttribute('href', `${BASE_URL}/painel`);
+    } else if (activeTab === 'admin') {
+      document.title = 'Console de Administração | Froc Sobrenatural';
+      if (metaDesc) metaDesc.setAttribute('content', 'Console restrito de governança e auditoria transacional.');
+      if (metaRobots) metaRobots.setAttribute('content', 'noindex, nofollow');
+      if (canonicalLink) canonicalLink.setAttribute('href', `${BASE_URL}/admin`);
+    } else if (activeTab === 'notfound') {
+      document.title = '404 - Coordenada Não Encontrada | Froc Sobrenatural';
+      if (metaDesc) metaDesc.setAttribute('content', 'A coordenada ou rota solicitada não existe nesta estação investigativa.');
+      if (metaRobots) metaRobots.setAttribute('content', 'noindex, nofollow');
+      if (canonicalLink) canonicalLink.setAttribute('href', BASE_URL);
+    } else {
+      document.title = 'Froc Sobrenatural Caça Fantasma';
+      if (metaDesc) metaDesc.setAttribute('content', 'Estação avançada de investigação sobrenatural com cadeia de evidência, análise de sinais de áudio, sensores reais, câmera, Ouija e teste cego rigoroso.');
+      if (metaRobots) metaRobots.setAttribute('content', 'index, follow');
+      if (canonicalLink) canonicalLink.setAttribute('href', BASE_URL);
+    }
+  }, [activeTab]);
+
   // Initialize Engines & Storage
   useEffect(() => {
     // Sincronizar rota da URL inicial

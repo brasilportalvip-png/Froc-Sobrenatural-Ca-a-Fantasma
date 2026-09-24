@@ -11,12 +11,3 @@ createRoot(document.getElementById('root')!).render(
     </AuthProvider>
   </StrictMode>,
 );
-
-// Registro seguro do Service Worker (PWA)
-if ('serviceWorker' in navigator && (window.location.protocol === 'https:' || window.location.hostname === 'localhost')) {
-  window.addEventListener('load', () => {
-    navigator.serviceWorker.register('/sw.js').catch((regError) => {
-      console.warn('[SW] Falha no registro do Service Worker:', regError);
-    });
-  });
-}

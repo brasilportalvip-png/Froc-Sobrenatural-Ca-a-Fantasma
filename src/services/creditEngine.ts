@@ -72,7 +72,9 @@ export async function claimFreeGrant(uid: string, userEmail?: string, emailVerif
           reserved: 0,
           promotionalGranted: 0,
           purchasedTotal: 0,
+          manualGrantedTotal: 0,
           spentTotal: 0,
+          debtAmount: 0,
           version: 1,
           updatedAt: Date.now(),
         };

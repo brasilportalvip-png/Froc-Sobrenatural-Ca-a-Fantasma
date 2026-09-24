@@ -45,6 +45,9 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onBackToApp, onOpenAuth 
   const [usersList, setUsersList] = useState<any[]>([]);
   const [searchTerm, setSearchTerm] = useState('');
   const [loadingUsers, setLoadingUsers] = useState(false);
+  const [hasNextUsersPage, setHasNextUsersPage] = useState(false);
+  const [nextUsersCursor, setNextUsersCursor] = useState<string | null>(null);
+  const [cursorHistory, setCursorHistory] = useState<string[]>([]);
 
   // Manual adjustment form
   const [targetUid, setTargetUid] = useState('');
@@ -94,18 +97,36 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onBackToApp, onOpenAuth 
     }
   };
 
-  const loadUsers = async () => {
+  const loadUsers = async (cursor?: string | null, isNext = false) => {
     try {
       setLoadingUsers(true);
       const token = await getIdToken();
       if (!token) return;
 
-      const res = await fetch(`/api/admin/users?search=${encodeURIComponent(searchTerm)}`, {
+      let url = `/api/admin/users?limit=25&search=${encodeURIComponent(searchTerm)}`;
+      if (cursor) {
+        url += `&startAfter=${encodeURIComponent(cursor)}`;
+      }
+
+      const res = await fetch(url, {
         headers: { Authorization: `Bearer ${token}` },
       });
       if (res.ok) {
         const data = await res.json();
-        setUsersList(data);
+        if (Array.isArray(data)) {
+          setUsersList(data);
+          setHasNextUsersPage(false);
+          setNextUsersCursor(null);
+        } else {
+          setUsersList(data.users || []);
+          setHasNextUsersPage(!!data.hasMore);
+          setNextUsersCursor(data.nextCursor || null);
+          if (isNext && cursor) {
+            setCursorHistory((prev) => [...prev, cursor]);
+          } else if (!cursor) {
+            setCursorHistory([]);
+          }
+        }
       }
     } catch (err) {
       console.warn('[AdminPanel] Erro ao carregar usuários:', err);
@@ -482,7 +503,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onBackToApp, onOpenAuth 
               />
             </div>
             <button
-              onClick={loadUsers}
+              onClick={() => loadUsers()}
               className="px-4 py-2 bg-cyan-950 hover:bg-cyan-900 border border-cyan-500/50 text-cyan-300 text-xs font-mono rounded-lg cursor-pointer"
             >
               Buscar
@@ -545,6 +566,47 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onBackToApp, onOpenAuth 
                 ))}
               </tbody>
             </table>
+          </div>
+
+          {/* Paginação do Usuários */}
+          <div className="flex items-center justify-between pt-2 px-1 text-xs font-mono text-slate-400">
+            <div>
+              Exibindo <span className="text-cyan-300 font-bold">{usersList.length}</span> registros nesta página
+            </div>
+            <div className="flex gap-2">
+              <button
+                disabled={cursorHistory.length === 0 || loadingUsers}
+                onClick={() => {
+                  const newHist = [...cursorHistory];
+                  newHist.pop(); // remove current
+                  const prevCursor = newHist.length > 0 ? newHist[newHist.length - 1] : null;
+                  setCursorHistory(newHist);
+                  loadUsers(prevCursor, false);
+                }}
+                className={`px-3 py-1.5 rounded border text-xs font-mono cursor-pointer transition ${
+                  cursorHistory.length === 0 || loadingUsers
+                    ? 'border-slate-800 text-slate-600 cursor-not-allowed opacity-50'
+                    : 'border-cyan-500/40 text-cyan-300 bg-cyan-950/60 hover:bg-cyan-900/60'
+                }`}
+              >
+                ← Anterior
+              </button>
+              <button
+                disabled={!hasNextUsersPage || loadingUsers || !nextUsersCursor}
+                onClick={() => {
+                  if (nextUsersCursor) {
+                    loadUsers(nextUsersCursor, true);
+                  }
+                }}
+                className={`px-3 py-1.5 rounded border text-xs font-mono cursor-pointer transition ${
+                  !hasNextUsersPage || loadingUsers || !nextUsersCursor
+                    ? 'border-slate-800 text-slate-600 cursor-not-allowed opacity-50'
+                    : 'border-cyan-500/40 text-cyan-300 bg-cyan-950/60 hover:bg-cyan-900/60'
+                }`}
+              >
+                Próxima →
+              </button>
+            </div>
           </div>
         </div>
       )}
