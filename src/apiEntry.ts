@@ -1,4 +1,7 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
+// Explicit import lets Vercel trace Firestore and its protobuf files.
+// Firebase Admin also loads it dynamically, which a file tracer cannot see.
+import '@google-cloud/firestore';
 import { app } from './serverApp';
 
 export { app };
