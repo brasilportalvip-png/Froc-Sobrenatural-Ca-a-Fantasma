@@ -1,6 +1,6 @@
 {
   "name": "Froc Sobrenatural Caça Fantasma",
-  "description": "Estação avançada de investigação sobrenatural com cadeia de evidência, análise de sinais de áudio, sensores reais, câmera, Ouija e teste cego rigoroso.",
+  "description": "Estação metodológica de pesquisa e investigação de campo com telemetria de sensores, espectrograma de áudio, registro de evidências e protocolo de teste cego criptografado.",
   "requestFramePermissions": [
     "camera",
     "microphone"
