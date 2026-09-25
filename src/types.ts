@@ -78,7 +78,7 @@ export interface EvidenceItem {
 
   // Ouija record
   ouijaRecord?: {
-    mode: 'physical' | 'digital';
+    mode: 'physical' | 'digital' | 'automatic';
     letters: string;
     operatorNote: string;
     dwellTimeSec: number;
@@ -290,4 +290,34 @@ export interface ToolSession {
   createdAt: number;
   endedAt?: number;
   requestId: string;
+}
+
+// ----------------------------------------------------
+// Parte 4: Legendas e Análise Forense Vocal em Tempo Real
+// ----------------------------------------------------
+
+export type LiveCaptionStatus =
+  | 'listening'
+  | 'analyzing'
+  | 'no_speech'
+  | 'possible_speech'
+  | 'error'
+  | 'paused';
+
+export interface LiveCaptionEvent {
+  id: string;
+  timestampFormatted: string; // "00:42"
+  timestampMs: number;
+  status: LiveCaptionStatus;
+  text: string;
+  candidateTranscription?: string | null;
+  confidence: number;
+  dbfs: number;
+  peakFrequencyHz: number;
+  provider: string;
+  executionTimeMs?: number;
+  toolSessionId?: string;
+  isRelevant: boolean;
+  audioBlob?: Blob;
+  alternativeHypotheses?: string[];
 }

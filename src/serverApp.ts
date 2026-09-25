@@ -624,11 +624,16 @@ FORMATO JSON OBRIGATÓRIO:
       throw new Error('Resposta de análise inválida.');
     }
 
-    // Normalização e validação de schema rigorosa
+    // Normalização e validação de schema rigorosa (NUNCA inventar transcrição com baixa confiança)
     if (!parsed.voiceDetected || typeof parsed.confidence !== 'number' || parsed.confidence < 0.4 || !hasAudioData) {
       parsed.candidateTranscription = null;
       if (!hasAudioData) {
         parsed.voiceDetected = false;
+        parsed.conclusion = 'Consulta registrada sem amostra de áudio anexada.';
+      } else if (parsed.voiceDetected) {
+        parsed.conclusion = 'Trecho vocal detectado, mas sem inteligibilidade suficiente.';
+      } else {
+        parsed.conclusion = 'Nenhuma fala inteligível identificada.';
       }
     }
     if (parsed.possibleName && typeof parsed.possibleName === 'object') {
@@ -721,10 +726,27 @@ app.post('/api/chat', authenticateFirebaseUser, async (req: any, res: Response) 
 
     if (!await enforceUserRateLimit(uid, 'chat', 20)) return res.status(429).json({ error: 'Limite temporário do chat atingido.' });
 
+    // Verificar se o usuário possui sessão paga ativa de comunicação (não cobrar se já estiver em sessão de 4 minutos)
+    const rawToolSessionId = req.headers['x-tool-session-id'] || req.body?.toolSessionId;
+    const toolSessionId = typeof rawToolSessionId === 'string' && rawToolSessionId.trim() ? rawToolSessionId.trim() : null;
+
+    let inPaidToolSession = false;
+    try {
+      const access = await validateToolAccess(uid, 'communication', toolSessionId || undefined);
+      if (access.allowed) {
+        inPaidToolSession = true;
+      }
+    } catch (sessErr) {
+      console.warn('[Chat] Aviso ao validar sessão da ferramenta:', sessErr);
+    }
+
     const payloadHash = crypto.createHash('sha256').update(JSON.stringify({ messages: recentMessages, sessionContext })).digest('hex');
-    const reservation = await reserveConsultationCredits(uid, requestId, payloadHash);
-    if (reservation.cachedResult) return res.json(reservation.cachedResult);
-    reserved = true;
+
+    if (!inPaidToolSession) {
+      const reservation = await reserveConsultationCredits(uid, requestId, payloadHash);
+      if (reservation.cachedResult) return res.json(reservation.cachedResult);
+      reserved = true;
+    }
 
     const systemInstruction = `
 Você é o assistente técnico de metodologia e análise da estação "Froc Sobrenatural Caça Fantasma".
@@ -762,10 +784,13 @@ REGRAS:
     const result = {
       reply: cascadeResult.text || 'Nenhuma análise gerada.',
       provider: cascadeResult.modelUsed,
-      costCredits: 5,
+      costCredits: inPaidToolSession ? 0 : 5,
+      inToolSession: inPaidToolSession,
     };
     if (!cascadeResult.text) throw new Error('Assistente retornou resposta vazia.');
-    await commitConsultationCredits(uid, requestId, cascadeResult.modelUsed, cascadeResult.executionTimeMs, result);
+    if (reserved) {
+      await commitConsultationCredits(uid, requestId, cascadeResult.modelUsed, cascadeResult.executionTimeMs, result);
+    }
     res.json(result);
   } catch (err: any) {
     console.error('Chat error:', err);

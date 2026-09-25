@@ -174,6 +174,56 @@ export class AudioEngine {
     return this.isRecordingSession;
   }
 
+  public getMediaStream(): MediaStream | null {
+    return this.micStream;
+  }
+
+  /**
+   * Captures an isolated short chunk (e.g. 3-8 seconds) for forensic VAD / IA analysis
+   * without disrupting or stopping any ongoing main recording.
+   */
+  public async recordChunk(durationMs: number = 4000): Promise<{ blob: Blob; mimeType: string } | null> {
+    const stream = this.micStream;
+    if (!stream || !stream.active) return null;
+    return new Promise((resolve) => {
+      try {
+        const chunks: Blob[] = [];
+        const mimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
+          ? 'audio/webm;codecs=opus'
+          : MediaRecorder.isTypeSupported('audio/webm')
+          ? 'audio/webm'
+          : 'audio/mp4';
+
+        const recorder = new MediaRecorder(stream, { mimeType });
+        recorder.ondataavailable = (e) => {
+          if (e.data && e.data.size > 0) chunks.push(e.data);
+        };
+        recorder.onstop = () => {
+          if (chunks.length === 0) {
+            resolve(null);
+            return;
+          }
+          const blob = new Blob(chunks, { type: mimeType });
+          resolve({ blob, mimeType });
+        };
+        recorder.onerror = () => resolve(null);
+        recorder.start();
+        setTimeout(() => {
+          try {
+            if (recorder.state === 'recording') {
+              recorder.stop();
+            }
+          } catch {
+            resolve(null);
+          }
+        }, durationMs);
+      } catch (err) {
+        console.warn('Erro ao gravar chunk de áudio:', err);
+        resolve(null);
+      }
+    });
+  }
+
   public stopMicrophone() {
     if (this.mediaRecorder && this.mediaRecorder.state !== 'inactive') {
       try {

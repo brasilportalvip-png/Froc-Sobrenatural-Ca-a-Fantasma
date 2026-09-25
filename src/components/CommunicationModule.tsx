@@ -1,7 +1,9 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { Session, EvidenceItem, SensorState } from '../types';
+import { Session, EvidenceItem, SensorState, LiveCaptionEvent, LiveCaptionStatus } from '../types';
 import { AudioMetrics } from '../services/audioEngine';
 import { useAuth } from '../services/AuthContext';
+import { useToolSession } from '../services/ToolSessionContext';
+import { LiveCaptionsEngine, ChunkRateLimiter } from '../services/liveCaptionsService';
 import {
   Mic,
   MicOff,
@@ -20,6 +22,12 @@ import {
   CheckCircle2,
   Sparkles,
   Wallet,
+  Clock,
+  Info,
+  Check,
+  RotateCcw,
+  Shield,
+  Zap,
 } from 'lucide-react';
 import { AudioOscilloscope } from './AudioOscilloscope';
 
@@ -36,6 +44,8 @@ interface Props {
     question: string,
     audioCandidateBlob?: Blob
   ) => Promise<EvidenceItem | null>;
+  onSaveLiveCaptionEvidence?: (item: LiveCaptionEvent, audioBlob?: Blob) => Promise<void>;
+  onGetAudioChunk?: (durationMs?: number) => Promise<{ blob: Blob; mimeType: string } | null>;
   onNavigateToEvidence: (evidenceId: string) => void;
   onUpdateEvidenceDecision?: (evidenceId: string, status: 'interference_marked' | 'confirmed_candidate' | 'discarded') => Promise<void>;
   onNavigateTab?: (tab: any) => void;
@@ -56,6 +66,8 @@ export const CommunicationModule: React.FC<Props> = ({
   sensorState,
   evidenceList,
   onAddQuestionEvidence,
+  onSaveLiveCaptionEvidence,
+  onGetAudioChunk,
   onNavigateToEvidence,
   onUpdateEvidenceDecision,
   onNavigateTab,
@@ -66,12 +78,44 @@ export const CommunicationModule: React.FC<Props> = ({
   hasGemini,
 }) => {
   const { user, wallet, getIdToken, refreshWallet } = useAuth();
+  const { getActiveSessionId, isSessionActive, remainingSeconds } = useToolSession();
+  const activeToolSessionId = getActiveSessionId('communication');
+  const isToolSessionActive = isSessionActive('communication');
+  const remainingSec = remainingSeconds['communication'] || 0;
+
   const [questionText, setQuestionText] = useState('');
   const [questionError, setQuestionError] = useState('');
   const [isProcessing, setIsProcessing] = useState(false);
   const [isListeningSpeech, setIsListeningSpeech] = useState(false);
   const [speechSupported, setSpeechSupported] = useState(false);
   const [speechRecognitionInstance, setSpeechRecognitionInstance] = useState<any>(null);
+
+  // Live Captions & VAD State
+  const [liveCaptionEvents, setLiveCaptionEvents] = useState<LiveCaptionEvent[]>([]);
+  const [liveCaptionStatus, setLiveCaptionStatus] = useState<LiveCaptionStatus>('listening');
+  const [isLiveCaptionsActive, setIsLiveCaptionsActive] = useState(true);
+  const [isTransmittingChunk, setIsTransmittingChunk] = useState(false);
+  const [savedCaptionIds, setSavedCaptionIds] = useState<Record<string, boolean>>({});
+  const rateLimiterRef = useRef<ChunkRateLimiter>({
+    lastCallTimestamp: 0,
+    timestampsInWindow: [],
+    lastChunkDbfs: -100,
+    lastPeakHz: 0,
+  });
+
+  // Painel Imediato da IA (Análise de Pergunta)
+  const [latestDirectAnalysis, setLatestDirectAnalysis] = useState<{
+    id: string;
+    question: string;
+    candidateTranscription?: string | null;
+    confidence: number;
+    conclusion: string;
+    alternativeHypotheses: string[];
+    metrics?: any;
+    model: string;
+    possibleName?: any;
+    timestamp: string;
+  } | null>(null);
 
   // Collapsible Instruments Strip state
   const [instrumentsExpanded, setInstrumentsExpanded] = useState(true);
@@ -123,6 +167,139 @@ export const CommunicationModule: React.FC<Props> = ({
     }
   }, []);
 
+  // Monitoramento contínuo de fala (VAD + Envio Seletivo para IA)
+  useEffect(() => {
+    if (!hasAudioPermission || !isLiveCaptionsActive) {
+      setLiveCaptionStatus('paused');
+      return;
+    }
+
+    let isDisposed = false;
+    const vadInterval = setInterval(async () => {
+      if (isDisposed || isTransmittingChunk) return;
+
+      const vadResult = LiveCaptionsEngine.evaluateVad(audioMetrics);
+
+      if (!vadResult.isVoiceCandidate) {
+        setLiveCaptionStatus('no_speech');
+        return;
+      }
+
+      setLiveCaptionStatus('possible_speech');
+
+      // Verificar se atende ao limite de requisições e cooldown
+      const check = LiveCaptionsEngine.canDispatchToAi(rateLimiterRef.current, audioMetrics);
+      if (!check.allowed) {
+        return;
+      }
+
+      // Se temos motor de chunks, IA disponível e sessão ativa de comunicação
+      if (onGetAudioChunk && hasGemini && isToolSessionActive) {
+        try {
+          setIsTransmittingChunk(true);
+          setLiveCaptionStatus('analyzing');
+
+          const chunk = await onGetAudioChunk(3600);
+          if (isDisposed) return;
+
+          if (chunk && chunk.blob.size > 2000) {
+            LiveCaptionsEngine.recordAiCall(rateLimiterRef.current, audioMetrics);
+            const token = await getIdToken();
+            const persistentReqId = `chunk_${activeToolSessionId || 'comm'}_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+            const base64Audio = await new Promise<string>((res) => {
+              const reader = new FileReader();
+              reader.onloadend = () => {
+                const b64 = (reader.result as string)?.split(',')[1] || '';
+                res(b64);
+              };
+              reader.readAsDataURL(chunk.blob);
+            });
+
+            const reqHeaders: Record<string, string> = { 'Content-Type': 'application/json' };
+            if (token) reqHeaders['Authorization'] = `Bearer ${token}`;
+            if (activeToolSessionId) reqHeaders['x-tool-session-id'] = activeToolSessionId;
+            reqHeaders['x-request-id'] = persistentReqId;
+
+            const resp = await fetch('/api/analyze', {
+              method: 'POST',
+              headers: reqHeaders,
+              body: JSON.stringify({
+                question: 'Monitoramento contínuo: análise de fonemas vocais detectados por VAD',
+                audioBase64: base64Audio,
+                mimeType: chunk.mimeType,
+                toolSessionId: activeToolSessionId,
+                audioMetrics: {
+                  dbfs: audioMetrics.dbfs,
+                  peakFrequencyHz: audioMetrics.peakFrequencyHz,
+                  rms: audioMetrics.rms,
+                  isVoiceBand: audioMetrics.isVoiceBand,
+                },
+                sensorContext: {
+                  magnetometer: sensorState.magnetometer,
+                  motion: sensorState.motion,
+                },
+              }),
+            });
+
+            if (resp.ok) {
+              const data = await resp.json();
+              const now = Date.now();
+              const elapsedSec = activeSession ? Math.max(0, Math.floor((now - activeSession.startTime) / 1000)) : 0;
+              const mins = String(Math.floor(elapsedSec / 60)).padStart(2, '0');
+              const secs = String(elapsedSec % 60).padStart(2, '0');
+              const timeFormatted = `${mins}:${secs}`;
+
+              let displayText = '';
+              let candidate = data.candidateTranscription || null;
+              const conf = typeof data.confidence === 'number' ? data.confidence : 0;
+
+              if (candidate && conf >= 0.40) {
+                displayText = `possível fala: "${candidate}" — confiança ${Math.round(conf * 100)}%`;
+              } else if (data.voiceDetected || conf >= 0.25) {
+                displayText = 'Trecho vocal detectado, mas sem inteligibilidade suficiente.';
+                candidate = null;
+              } else {
+                displayText = 'Nenhuma fala inteligível identificada no trecho.';
+                candidate = null;
+              }
+
+              const newEvt: LiveCaptionEvent = {
+                id: `evt_${now}_${Math.random().toString(36).slice(2, 6)}`,
+                timestampFormatted: timeFormatted,
+                timestampMs: now,
+                status: candidate ? 'possible_speech' : 'no_speech',
+                text: displayText,
+                candidateTranscription: candidate,
+                confidence: conf,
+                dbfs: audioMetrics.dbfs,
+                peakFrequencyHz: audioMetrics.peakFrequencyHz,
+                provider: data.provider || 'Gemini 3.8 Flash',
+                executionTimeMs: data.executionTimeMs,
+                toolSessionId: activeToolSessionId,
+                isRelevant: !!candidate || conf >= 0.25 || audioMetrics.isVoiceBand,
+                audioBlob: chunk.blob,
+                alternativeHypotheses: data.alternativeHypotheses,
+              };
+
+              setLiveCaptionEvents((prev) => [newEvt, ...prev.slice(0, 49)]);
+            }
+          }
+        } catch (chunkErr) {
+          console.warn('[LiveCaptions] Falha no processamento de chunk:', chunkErr);
+          setLiveCaptionStatus('error');
+        } finally {
+          setIsTransmittingChunk(false);
+          setLiveCaptionStatus('listening');
+        }
+      }
+    }, 3200);
+
+    return () => {
+      isDisposed = true;
+      clearInterval(vadInterval);
+    };
+  }, [hasAudioPermission, isLiveCaptionsActive, hasGemini, isToolSessionActive, activeToolSessionId, audioMetrics, activeSession, sensorState, onGetAudioChunk, getIdToken]);
+
   const toggleSpeechRecognition = () => {
     if (!speechRecognitionInstance) return;
     if (isListeningSpeech) {
@@ -152,12 +329,35 @@ export const CommunicationModule: React.FC<Props> = ({
       if (!result) {
         setQuestionText(q);
         setQuestionError('Consulta não concluída. Verifique a conexão, o saldo ou a disponibilidade da IA; sua pergunta foi mantida.');
+      } else {
+        setLatestDirectAnalysis({
+          id: result.id,
+          question: q,
+          candidateTranscription: result.candidateTranscription,
+          confidence: result.confidenceScore || 0,
+          conclusion: result.details || result.aiAnalysis?.conclusion || 'Análise pericial concluída.',
+          alternativeHypotheses: result.aiAnalysis?.alternativeHypotheses || ['Variação acústica natural', 'Ruído de fundo'],
+          metrics: result.signalData,
+          model: result.aiAnalysis?.provider || 'Motor Forense',
+          possibleName: result.possibleName,
+          timestamp: result.formattedTime,
+        });
       }
     } catch {
       setQuestionText(q);
       setQuestionError('Falha ao enviar consulta. Sua pergunta foi mantida.');
     } finally {
       setIsProcessing(false);
+    }
+  };
+
+  const handleSaveCaptionItem = async (evt: LiveCaptionEvent) => {
+    if (!onSaveLiveCaptionEvidence) return;
+    try {
+      await onSaveLiveCaptionEvidence(evt, evt.audioBlob);
+      setSavedCaptionIds((prev) => ({ ...prev, [evt.id]: true }));
+    } catch (err) {
+      console.error('Falha ao salvar evidência de legenda:', err);
     }
   };
 
@@ -186,6 +386,9 @@ export const CommunicationModule: React.FC<Props> = ({
       const headers: Record<string, string> = { 'Content-Type': 'application/json' };
       if (token) {
         headers['Authorization'] = `Bearer ${token}`;
+      }
+      if (activeToolSessionId) {
+        headers['x-tool-session-id'] = activeToolSessionId;
       }
 
       const res = await fetch('/api/chat', {
@@ -485,6 +688,145 @@ export const CommunicationModule: React.FC<Props> = ({
       {/* 2. Osciloscópio & Espectrograma em Tempo Real */}
       <AudioOscilloscope metrics={audioMetrics} isRecording={isRecording} />
 
+      {/* 2.5 Painel de Legenda em Tempo Real (VAD + IA) */}
+      <div className="bg-[#080d16] border border-cyan-950/90 rounded-lg p-3 sm:p-4 shadow-lg space-y-3">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-slate-800/80 pb-2.5">
+          <div className="flex items-center gap-2">
+            <span className="w-2.5 h-2.5 rounded-full bg-cyan-400 shadow-[0_0_10px_#00f0ff]" />
+            <h3 className="text-xs sm:text-sm font-bold text-white font-mono uppercase tracking-wider">
+              MONITORAMENTO DE VOZ EM TEMPO REAL (VAD + IA)
+            </h3>
+          </div>
+
+          <div className="flex items-center gap-2 flex-wrap">
+            {/* Status Badges */}
+            <div className="flex items-center gap-1.5 font-mono text-[11px]">
+              {liveCaptionStatus === 'listening' && (
+                <span className="flex items-center gap-1.5 text-emerald-300 bg-emerald-950/80 border border-emerald-500/50 px-2 py-0.5 rounded">
+                  <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
+                  OUVINDO
+                </span>
+              )}
+              {liveCaptionStatus === 'analyzing' && (
+                <span className="flex items-center gap-1.5 text-cyan-300 bg-cyan-950/80 border border-cyan-500/50 px-2 py-0.5 rounded animate-pulse">
+                  <span className="w-2 h-2 rounded-full bg-cyan-400 animate-ping" />
+                  ANALISANDO
+                </span>
+              )}
+              {liveCaptionStatus === 'no_speech' && (
+                <span className="flex items-center gap-1.5 text-slate-400 bg-slate-900 border border-slate-700 px-2 py-0.5 rounded">
+                  <span className="w-2 h-2 rounded-full bg-slate-500" />
+                  SEM FALA
+                </span>
+              )}
+              {liveCaptionStatus === 'possible_speech' && (
+                <span className="flex items-center gap-1.5 text-amber-300 bg-amber-950/80 border border-amber-500/50 px-2 py-0.5 rounded">
+                  <span className="w-2 h-2 rounded-full bg-amber-400 animate-bounce" />
+                  POSSÍVEL FALA
+                </span>
+              )}
+              {liveCaptionStatus === 'error' && (
+                <span className="flex items-center gap-1.5 text-rose-300 bg-rose-950/80 border border-rose-500/50 px-2 py-0.5 rounded">
+                  <span className="w-2 h-2 rounded-full bg-rose-400" />
+                  ERRO
+                </span>
+              )}
+              {liveCaptionStatus === 'paused' && (
+                <span className="flex items-center gap-1.5 text-slate-500 bg-slate-950 border border-slate-800 px-2 py-0.5 rounded">
+                  PAUSADO
+                </span>
+              )}
+            </div>
+
+            <button
+              onClick={() => setIsLiveCaptionsActive(!isLiveCaptionsActive)}
+              className={`px-2.5 py-1 rounded text-xs font-mono border transition cursor-pointer ${
+                isLiveCaptionsActive
+                  ? 'bg-cyan-950/60 border-cyan-500 text-cyan-300'
+                  : 'bg-slate-900 border-slate-700 text-slate-400 hover:text-white'
+              }`}
+            >
+              {isLiveCaptionsActive ? 'Pausar Legenda' : 'Ativar Legenda'}
+            </button>
+          </div>
+        </div>
+
+        {/* Privacy Banner */}
+        {isTransmittingChunk && (
+          <div className="p-2 rounded bg-cyan-950/80 border border-cyan-500/60 flex items-center justify-between text-xs font-mono text-cyan-200 animate-pulse">
+            <div className="flex items-center gap-2">
+              <Shield className="w-4 h-4 text-cyan-400 shrink-0" />
+              <span>
+                <strong>[AVISO DE PRIVACIDADE]</strong> Trecho de áudio selecionado sendo enviado para análise forense neural (Gemini)...
+              </span>
+            </div>
+            <span className="text-[10px] text-cyan-400 uppercase hidden sm:inline">Criptografia Ponta a Ponta</span>
+          </div>
+        )}
+
+        {/* Captions feed */}
+        <div className="space-y-2 max-h-[200px] overflow-y-auto pr-1">
+          {liveCaptionEvents.length === 0 ? (
+            <div className="text-center py-5 text-slate-500 font-mono text-xs border border-dashed border-slate-800/80 rounded">
+              <p>Nenhuma ocorrência vocal capturada até o momento.</p>
+              <p className="text-[11px] text-slate-600 mt-0.5">
+                O motor local (VAD) analisa energia vocal (250Hz–3.4kHz) e silêncio antes de acionar a IA.
+              </p>
+            </div>
+          ) : (
+            liveCaptionEvents.map((evt) => (
+              <div
+                key={evt.id}
+                className="bg-[#0b121e] border border-slate-800/80 hover:border-cyan-900/60 rounded p-2.5 flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs font-mono transition"
+              >
+                <div className="flex-1 space-y-1">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <span className="text-cyan-400 font-bold">{evt.timestampFormatted}</span>
+                    <span className="text-slate-600">—</span>
+                    <span className={evt.candidateTranscription ? 'text-emerald-300 font-semibold' : 'text-slate-300'}>
+                      {evt.text}
+                    </span>
+                  </div>
+
+                  <div className="flex items-center gap-3 text-[10px] text-slate-500 flex-wrap">
+                    <span>dBFS: <strong className="text-slate-300">{evt.dbfs.toFixed(1)}</strong></span>
+                    <span>Pico: <strong className="text-slate-300">{evt.peakFrequencyHz} Hz</strong></span>
+                    {evt.confidence > 0 && (
+                      <span>Confiança: <strong className="text-cyan-400">{Math.round(evt.confidence * 100)}%</strong></span>
+                    )}
+                    <span>Provedor: <strong className="text-slate-400">{evt.provider}</strong></span>
+                  </div>
+                </div>
+
+                {evt.isRelevant && (
+                  <button
+                    onClick={() => handleSaveCaptionItem(evt)}
+                    disabled={savedCaptionIds[evt.id]}
+                    className={`px-2.5 py-1 rounded text-[11px] font-mono flex items-center gap-1 cursor-pointer transition shrink-0 ${
+                      savedCaptionIds[evt.id]
+                        ? 'bg-emerald-950/80 border border-emerald-600/50 text-emerald-300 cursor-default'
+                        : 'bg-cyan-600/30 hover:bg-cyan-600/60 border border-cyan-500/60 text-cyan-200'
+                    }`}
+                  >
+                    {savedCaptionIds[evt.id] ? (
+                      <>
+                        <Check className="w-3 h-3 text-emerald-400" />
+                        <span>SALVO NA CADEIA</span>
+                      </>
+                    ) : (
+                      <>
+                        <FileCheck className="w-3 h-3 text-cyan-400" />
+                        <span>SALVAR COMO EVIDÊNCIA</span>
+                      </>
+                    )}
+                  </button>
+                )}
+              </div>
+            ))
+          )}
+        </div>
+      </div>
+
       {/* 3. Área de Entrada de Pergunta do Investigador */}
       <div className="bg-[#090f1a] border border-cyan-950/80 rounded-lg p-3 sm:p-4">
         <div className="flex justify-between items-center mb-2">
@@ -500,9 +842,16 @@ export const CommunicationModule: React.FC<Props> = ({
         {/* Informações de Custo e Saldo de Créditos em tempo real */}
         <div className="mb-2 flex items-center justify-between text-[11px] font-mono">
           <div className="flex items-center gap-2">
-            <span className="text-amber-400 font-bold bg-amber-950/60 border border-amber-600/40 px-2 py-0.5 rounded">
-              Custo: 5 créditos por consulta
-            </span>
+            {isToolSessionActive ? (
+              <span className="text-emerald-300 font-bold bg-emerald-950/80 border border-emerald-500/60 px-2 py-0.5 rounded flex items-center gap-1.5">
+                <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+                Sessão Paga Ativa: Consultas incluídas (restam {remainingSec}s)
+              </span>
+            ) : (
+              <span className="text-amber-400 font-bold bg-amber-950/60 border border-amber-600/40 px-2 py-0.5 rounded">
+                Custo: 5 créditos por consulta (ou inicie sessão de 4 min)
+              </span>
+            )}
             <span className="text-slate-400 hidden sm:inline">
               (Análise espectral + motor de IA)
             </span>
@@ -517,7 +866,7 @@ export const CommunicationModule: React.FC<Props> = ({
               >
                 <Wallet className="w-3.5 h-3.5 text-cyan-400" />
                 <span>Saldo: <strong>{wallet ? wallet.balance : 0}</strong> créditos</span>
-                {wallet && wallet.balance < 5 && (
+                {!isToolSessionActive && wallet && wallet.balance < 5 && (
                   <span className="text-[10px] text-rose-400 font-bold ml-1">(Insuficiente)</span>
                 )}
               </button>
@@ -561,7 +910,7 @@ export const CommunicationModule: React.FC<Props> = ({
 
           <button
             type="submit"
-            disabled={!questionText.trim() || isProcessing || (!!user && !!wallet && wallet.balance < 5)}
+            disabled={!questionText.trim() || isProcessing || (!isToolSessionActive && !!user && !!wallet && wallet.balance < 5)}
             className="px-4 py-2 rounded bg-cyan-600 hover:bg-cyan-500 disabled:bg-slate-800 disabled:text-slate-600 text-white font-mono text-xs font-bold flex items-center gap-1.5 transition cursor-pointer shrink-0"
           >
             {isProcessing ? (
@@ -577,9 +926,9 @@ export const CommunicationModule: React.FC<Props> = ({
 
         {questionError && <p role="alert" className="mt-2 text-xs text-rose-300">{questionError}</p>}
 
-        {user && wallet && wallet.balance < 5 && (
+        {!isToolSessionActive && user && wallet && wallet.balance < 5 && (
           <div className="mt-2 p-2 rounded bg-rose-950/60 border border-rose-600/50 flex justify-between items-center text-[11px] font-mono text-rose-200">
-            <span>Saldo insuficiente (5 créditos necessários para enviar nova consulta).</span>
+            <span>Saldo insuficiente (5 créditos necessários para consulta avulsa, ou inicie uma sessão de 4 minutos).</span>
             <button
               type="button"
               onClick={onOpenWallet}
@@ -617,6 +966,77 @@ export const CommunicationModule: React.FC<Props> = ({
           ))}
         </div>
       </div>
+
+      {/* 3.5 Painel Imediato da IA (Resultado da Pergunta Formulada) */}
+      {latestDirectAnalysis && (
+        <div className="bg-[#07111e] border-2 border-cyan-500/80 rounded-lg p-3 sm:p-4 shadow-[0_0_20px_rgba(0,240,255,0.15)] space-y-3 font-mono">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-1 border-b border-cyan-900/60 pb-2">
+            <div className="flex items-center gap-2">
+              <Sparkles className="w-4 h-4 text-cyan-400" />
+              <h4 className="text-xs sm:text-sm font-bold text-cyan-300 uppercase tracking-wider">
+                ANÁLISE DA IA — RESULTADO IMEDIATO
+              </h4>
+            </div>
+            <span className="text-[10px] text-cyan-400 bg-cyan-950 px-2 py-0.5 rounded border border-cyan-500/40">
+              Registrado na Cadeia de Evidência #{latestDirectAnalysis.id}
+            </span>
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
+            <div className="space-y-1 bg-[#050b14] p-2.5 rounded border border-slate-800">
+              <span className="text-[10px] text-slate-500 uppercase block">Pergunta Formulada:</span>
+              <p className="text-slate-100 font-semibold font-sans">"{latestDirectAnalysis.question}"</p>
+            </div>
+
+            <div className="space-y-1 bg-[#050b14] p-2.5 rounded border border-slate-800">
+              <span className="text-[10px] text-slate-500 uppercase block">Possível Transcrição:</span>
+              <p className={`font-semibold ${latestDirectAnalysis.candidateTranscription ? 'text-emerald-400 font-mono text-sm' : 'text-slate-400'}`}>
+                {latestDirectAnalysis.candidateTranscription ? `"${latestDirectAnalysis.candidateTranscription}"` : 'Trecho vocal detectado, mas sem inteligibilidade suficiente.'}
+              </p>
+            </div>
+          </div>
+
+          <div className="bg-[#050b14] p-3 rounded border border-slate-800 space-y-1 text-xs">
+            <span className="text-[10px] text-slate-500 uppercase block">Conclusão Metodológica:</span>
+            <p className="text-slate-200 font-sans leading-relaxed">{latestDirectAnalysis.conclusion}</p>
+          </div>
+
+          {latestDirectAnalysis.alternativeHypotheses && latestDirectAnalysis.alternativeHypotheses.length > 0 && (
+            <div className="bg-[#050b14] p-2.5 rounded border border-slate-800 space-y-1 text-xs">
+              <span className="text-[10px] text-slate-500 uppercase block">Hipóteses Alternativas Físicas:</span>
+              <ul className="list-disc list-inside space-y-0.5 text-slate-400 text-[11px] font-sans">
+                {latestDirectAnalysis.alternativeHypotheses.map((hypo: string, idx: number) => (
+                  <li key={idx}>{hypo}</li>
+                ))}
+              </ul>
+            </div>
+          )}
+
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 pt-1 text-[11px]">
+            <div className="bg-slate-900/60 p-1.5 rounded border border-slate-800">
+              <span className="text-[9px] text-slate-500 block uppercase">Confiança:</span>
+              <strong className="text-cyan-300">{Math.round(latestDirectAnalysis.confidence * 100)}%</strong>
+            </div>
+
+            <div className="bg-slate-900/60 p-1.5 rounded border border-slate-800">
+              <span className="text-[9px] text-slate-500 block uppercase">Modelo Utilizado:</span>
+              <strong className="text-slate-300 truncate block">{latestDirectAnalysis.model}</strong>
+            </div>
+
+            <div className="bg-slate-900/60 p-1.5 rounded border border-slate-800">
+              <span className="text-[9px] text-slate-500 block uppercase">Horário:</span>
+              <strong className="text-slate-300">{latestDirectAnalysis.timestamp}</strong>
+            </div>
+
+            <div className="bg-slate-900/60 p-1.5 rounded border border-slate-800">
+              <span className="text-[9px] text-slate-500 block uppercase">Status da Sessão:</span>
+              <strong className={isToolSessionActive ? 'text-emerald-400' : 'text-amber-400'}>
+                {isToolSessionActive ? `Ativa (${remainingSec}s)` : 'Consulta Avulsa'}
+              </strong>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* 4. Chat de Perguntas & Respostas com Categorias Estritas */}
       <div className="bg-[#080d16] border border-slate-800 rounded-lg p-3 sm:p-4">

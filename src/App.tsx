@@ -5,6 +5,7 @@ import {
   EvidenceItem,
   SensorState,
   EvidenceCategory,
+  LiveCaptionEvent,
 } from './types';
 import {
   saveSession,
@@ -587,6 +588,59 @@ export default function App() {
     return newEvidence;
   };
 
+  // Add Live Caption Evidence (called by CommunicationModule)
+  const handleSaveLiveCaptionEvidence = async (event: LiveCaptionEvent, audioBlob?: Blob) => {
+    let currentSession = activeSession;
+    if (!currentSession) {
+      await handleStartSession();
+      currentSession = activeSession;
+    }
+    const sessionId = currentSession?.id || selectedSessionId;
+    const now = Date.now();
+    const relativeTimeSec = currentSession
+      ? Math.max(0, (now - currentSession.startTime) / 1000)
+      : 0;
+
+    const evidenceId = `ev_caption_${now}`;
+    const newEvidence: EvidenceItem = {
+      id: evidenceId,
+      sessionId,
+      timestamp: now,
+      formattedTime: new Date(now).toLocaleTimeString(),
+      relativeTimeSec,
+      category: 'candidate_transcription',
+      title: event.candidateTranscription
+        ? `Legenda Vocal: "${event.candidateTranscription}"`
+        : `Detecção de Sinal Vocal (${event.dbfs.toFixed(0)} dBFS)`,
+      details: event.text,
+      signalData: {
+        dbfs: event.dbfs,
+        peakFrequencyHz: event.peakFrequencyHz,
+        rms: audioMetrics.rms,
+        magneticMagnitudeUtd: sensorState.magnetometer.available
+          ? sensorState.magnetometer.magnitude
+          : undefined,
+      },
+      hasAudio: !!audioBlob,
+      audioId: audioBlob ? `audio_${evidenceId}` : undefined,
+      candidateTranscription: event.candidateTranscription || null,
+      confidenceScore: event.confidence,
+      decisionStatus: 'pending',
+      aiAnalysis: {
+        conclusion: event.text,
+        confidence: event.confidence,
+        voiceDetected: event.status === 'possible_speech' || !!event.candidateTranscription,
+        acousticAnalysis: `[VAD em Tempo Real] dBFS: ${event.dbfs.toFixed(1)} | Frequência: ${event.peakFrequencyHz} Hz | Provedor: ${event.provider}`,
+        alternativeHypotheses: event.alternativeHypotheses || ['Ruído acústico do ambiente', 'Interferência do transdutor'],
+        provider: event.provider,
+      },
+      verifiedStatus: event.candidateTranscription ? 'inconclusive' : 'refuted_noise',
+    };
+
+    await saveEvidenceItem(newEvidence, audioBlob);
+    setEvidenceList((prev) => [newEvidence, ...prev]);
+  };
+
   // Add Photo Evidence (called by VisionModule)
   const handleSavePhotoEvidence = async (photoDataUrl: string, analysisNote: string) => {
     let currentSession = activeSession;
@@ -628,7 +682,7 @@ export default function App() {
 
   // Add Ouija Evidence (called by OuijaModule)
   const handleSaveOuijaEvidence = async (
-    mode: 'physical' | 'digital',
+    mode: 'physical' | 'digital' | 'automatic',
     letters: string,
     notes: string,
     durationSec: number
@@ -640,6 +694,11 @@ export default function App() {
       : 0;
 
     const evidenceId = `ev_ouija_${now}`;
+    const modeLabel = mode === 'automatic'
+      ? 'Tabuleiro Automático (Dwell & Sensores)'
+      : mode === 'digital'
+      ? 'Tabuleiro Digital Ideomotor'
+      : 'Tabuleiro Físico';
     const newEvidence: EvidenceItem = {
       id: evidenceId,
       sessionId,
@@ -647,7 +706,7 @@ export default function App() {
       formattedTime: new Date(now).toLocaleTimeString(),
       relativeTimeSec,
       category: 'ouija_record',
-      title: `Registro Ouija (${mode === 'digital' ? 'Tabuleiro Digital' : 'Tabuleiro Físico'})`,
+      title: `Registro Ouija (${modeLabel})`,
       details: notes,
       ouijaRecord: {
         mode,
@@ -946,6 +1005,8 @@ export default function App() {
               sensorState={sensorState}
               evidenceList={evidenceList}
               onAddQuestionEvidence={handleAddQuestionEvidence}
+              onSaveLiveCaptionEvidence={handleSaveLiveCaptionEvidence}
+              onGetAudioChunk={(durationMs) => audioEngineRef.current?.recordChunk(durationMs) ?? Promise.resolve(null)}
               onNavigateToEvidence={handleNavigateToEvidence}
               onUpdateEvidenceDecision={handleUpdateEvidenceDecision}
               onNavigateTab={(tab) => setActiveTab(tab)}
@@ -982,6 +1043,8 @@ export default function App() {
               activeSession={activeSession}
               onSaveOuijaEvidence={handleSaveOuijaEvidence}
               evidenceList={evidenceList}
+              sensorState={sensorState}
+              audioMetrics={audioMetrics}
             />
           </ToolSessionGate>
         )}
