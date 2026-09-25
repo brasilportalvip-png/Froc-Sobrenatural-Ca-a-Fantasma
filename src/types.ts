@@ -73,8 +73,32 @@ export interface EvidenceItem {
     provider: string;
   };
 
-  // Visual capture
+  // Visual capture & Optical processing metadata
   photoDataUrl?: string;
+  visionMetadata?: {
+    mode: 'standard' | 'low_light' | 'green_filter' | 'frame_stacking';
+    gain: number;
+    gamma: number;
+    appliedGain: number;
+    avgLuminance: number;
+    lightCategory: 'very_dark' | 'low_light' | 'moderate' | 'bright';
+    frameStacking: boolean;
+    stackedFramesCount?: number;
+    temporalDenoise: number;
+    edgeEnhance: 'none' | 'low' | 'high';
+    histogramStretched: boolean;
+    motionPercent: number;
+    cameraCapabilities?: {
+      torchSupported: boolean;
+      torchActive?: boolean;
+      zoomSupported: boolean;
+      zoomValue?: number;
+      exposureSupported: boolean;
+      exposureValue?: number;
+      facingMode: string;
+    };
+    forensicDisclaimer: string;
+  };
 
   // Ouija record
   ouijaRecord?: {

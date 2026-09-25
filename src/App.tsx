@@ -658,7 +658,11 @@ export default function App() {
   };
 
   // Add Photo Evidence (called by VisionModule)
-  const handleSavePhotoEvidence = async (photoDataUrl: string, analysisNote: string) => {
+  const handleSavePhotoEvidence = async (
+    photoDataUrl: string,
+    analysisNote: string,
+    visionMetadata?: any
+  ) => {
     let currentSession = activeSession;
     if (!currentSession) {
       await handleStartSession();
@@ -681,6 +685,7 @@ export default function App() {
       title: 'Fotografia Forense de Campo',
       details: analysisNote,
       photoDataUrl,
+      visionMetadata,
       signalData: {
         dbfs: audioMetrics.dbfs,
         peakFrequencyHz: audioMetrics.peakFrequencyHz,
