@@ -92,7 +92,7 @@ export default function App() {
       y: 0,
       z: 0,
       magnitude: 0,
-      baseline: 45.0,
+      baseline: 0,
       delta: 0,
       unit: 'µT',
       statusText: 'Iniciando...',
@@ -103,7 +103,20 @@ export default function App() {
       y: 0,
       z: 0,
       magnitude: 0,
+      baseline: 0,
+      delta: 0,
       unit: 'm/s²',
+      statusText: 'Iniciando...',
+    },
+    orientation: {
+      available: false,
+      alpha: null,
+      beta: null,
+      gamma: null,
+      baselineBeta: 0,
+      baselineGamma: 0,
+      deltaBeta: 0,
+      deltaGamma: 0,
       statusText: 'Iniciando...',
     },
     audioLevel: {
@@ -288,6 +301,9 @@ export default function App() {
               motion: {
                 ...sensors.motion,
                 unit: 'm/s²',
+              },
+              orientation: {
+                ...sensors.orientation,
               },
               audioLevel: {
                 dbfs: metrics.dbfs,
@@ -685,7 +701,9 @@ export default function App() {
     mode: 'physical' | 'digital' | 'automatic',
     letters: string,
     notes: string,
-    durationSec: number
+    durationSec: number,
+    telemetry?: any,
+    questionContext?: string
   ) => {
     const sessionId = activeSession?.id || selectedSessionId;
     const now = Date.now();
@@ -713,6 +731,8 @@ export default function App() {
         letters,
         operatorNote: notes,
         dwellTimeSec: durationSec,
+        telemetry,
+        questionContext,
       },
       verifiedStatus: 'inconclusive',
     };
@@ -1045,6 +1065,12 @@ export default function App() {
               evidenceList={evidenceList}
               sensorState={sensorState}
               audioMetrics={audioMetrics}
+              onRequestSensorPermissions={() =>
+                sensorEngineRef.current?.requestMotionPermission() ?? Promise.resolve(false)
+              }
+              onCalibrateSensors={() =>
+                sensorEngineRef.current?.calibrateSensors()
+              }
             />
           </ToolSessionGate>
         )}

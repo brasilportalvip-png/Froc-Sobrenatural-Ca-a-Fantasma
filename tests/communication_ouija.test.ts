@@ -113,3 +113,40 @@ test('API /api/chat: Rota existe e rejeita requisições anônimas com 401', asy
   await authMiddleware(mockReq, mockRes, () => {});
   assert.equal(statusCode, 401, 'Requisição anônima deve receber 401');
 });
+
+test('Ouija Forense: Código-fonte do OuijaModule não contém manipulação de alvos artificiais nem Math.random', async () => {
+  const fs = await import('node:fs/promises');
+  const code = await fs.readFile('src/components/OuijaModule.tsx', 'utf-8');
+
+  // 1. Não deve haver targets derivados da pergunta
+  assert.equal(code.includes('activeTargetSymbols'), false, 'Não deve haver activeTargetSymbols');
+  assert.equal(code.includes('targetIndex'), false, 'Não deve haver targetIndex');
+  assert.equal(code.includes("'N', 'O', 'M', 'E'"), false, 'Não deve haver resposta N-O-M-E pré-programada');
+  assert.equal(code.includes('targets = [pickSim'), false, 'Não deve haver SIM/NÃO pré-escolhido');
+
+  // 2. Não deve haver Math.random() para movimento ou impulsos
+  assert.equal(code.includes('Math.random()'), false, 'Não deve usar Math.random() no Ouija');
+
+  // 3. Não deve inventar magnetômetro 45
+  assert.equal(code.includes('|| 45'), false, 'Não deve conter fallback fictício 45 µT');
+});
+
+test('SensorEngine: Inicialização, calibragem de baseline e leituras de sensores físicos', async () => {
+  const { SensorEngine } = await import('../src/services/sensorEngine.js');
+  const engine = new SensorEngine();
+
+  const initial = engine.getReadings();
+  assert.equal(initial.magnetometer.available, false);
+  assert.equal(initial.magnetometer.baseline, 0);
+  assert.equal(initial.motion.available, false);
+  assert.equal(initial.motion.baseline, 0);
+  assert.equal(initial.orientation.available, false);
+
+  // Testar calibração sem falhas
+  engine.calibrateSensors();
+  const afterCalib = engine.getReadings();
+  assert.equal(afterCalib.magnetometer.delta, 0);
+
+  engine.stop();
+});
+

@@ -82,6 +82,8 @@ export interface EvidenceItem {
     letters: string;
     operatorNote: string;
     dwellTimeSec: number;
+    telemetry?: any;
+    questionContext?: string;
   };
 
   // Status
@@ -125,7 +127,25 @@ export interface SensorState {
     y: number;
     z: number;
     magnitude: number;
+    baseline?: number;
+    delta?: number;
     unit: 'm/s²';
+    statusText: string;
+    rotationRate?: {
+      alpha: number | null;
+      beta: number | null;
+      gamma: number | null;
+    };
+  };
+  orientation?: {
+    available: boolean;
+    alpha: number | null;
+    beta: number | null;
+    gamma: number | null;
+    baselineBeta: number;
+    baselineGamma: number;
+    deltaBeta: number;
+    deltaGamma: number;
     statusText: string;
   };
   audioLevel: {

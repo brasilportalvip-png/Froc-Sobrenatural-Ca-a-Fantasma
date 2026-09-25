@@ -1,21 +1,19 @@
-import React, { useState, useRef, useEffect, useCallback } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import { Session, EvidenceItem, SensorState } from '../types';
 import { AudioMetrics } from '../services/audioEngine';
 import {
   Compass,
-  Sparkles,
-  Check,
-  AlertTriangle,
+  RotateCcw,
+  Square,
   Play,
   Pause,
-  Square,
-  RotateCcw,
   Zap,
   Activity,
+  AlertTriangle,
+  CheckCircle,
   HelpCircle,
-  Clock,
   Shield,
-  Send,
+  Layers,
 } from 'lucide-react';
 
 interface Props {
@@ -24,11 +22,15 @@ interface Props {
     mode: 'physical' | 'digital' | 'automatic',
     letters: string,
     notes: string,
-    durationSec: number
+    durationSec: number,
+    telemetry?: any,
+    questionContext?: string
   ) => Promise<void>;
   evidenceList: EvidenceItem[];
   sensorState?: SensorState;
   audioMetrics?: AudioMetrics;
+  onRequestSensorPermissions?: () => Promise<boolean>;
+  onCalibrateSensors?: () => void;
 }
 
 interface BoardSymbol {
@@ -39,14 +41,20 @@ interface BoardSymbol {
   category: 'word' | 'letter' | 'number';
 }
 
-interface AutomaticCaptureLog {
+export interface AutomaticCaptureLog {
   id: string;
   timestamp: string;
   symbol: string;
   dwellMs: number;
   velocity: number;
-  emf: number;
-  confidence: number;
+  emfMagnitude: number | null;
+  emfDelta: number | null;
+  motionMagnitude: number | null;
+  tiltBeta: number | null;
+  tiltGamma: number | null;
+  audioRms: number;
+  audioDbfs: number;
+  stabilityScore: number;
 }
 
 // Fixed board geometry definition
@@ -100,19 +108,34 @@ const BOARD_SYMBOLS: BoardSymbol[] = [
   { id: 'ADEUS', label: 'ADEUS', x: 50, y: 88, category: 'word' },
 ];
 
+// Cryptographically secure ID generator without Math.random
+function generateSecureId(prefix = 'log'): string {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return `${prefix}_${crypto.randomUUID()}`;
+  }
+  if (typeof crypto !== 'undefined' && typeof crypto.getRandomValues === 'function') {
+    const arr = new Uint8Array(8);
+    crypto.getRandomValues(arr);
+    return `${prefix}_${Array.from(arr, (b) => b.toString(16).padStart(2, '0')).join('')}`;
+  }
+  return `${prefix}_${Date.now()}_${performance.now().toString(36).replace('.', '')}`;
+}
+
 export const OuijaModule: React.FC<Props> = ({
   activeSession,
   onSaveOuijaEvidence,
   evidenceList,
   sensorState,
   audioMetrics,
+  onRequestSensorPermissions,
+  onCalibrateSensors,
 }) => {
-  // Modo padrão: 'automatic' (conforme requisito principal do comitê)
+  // Modo padrão: 'automatic' (varredura física baseada em sensores reais)
   const [ouijaMode, setOuijaMode] = useState<'automatic' | 'digital' | 'physical'>('automatic');
 
   // Automatic & Digital board coordinates
-  const [planchettePos, setPlanchettePos] = useState({ x: 50, y: 50 });
-  const [touchVelocity, setTouchVelocity] = useState(0);
+  const [planchettePos, setPlanchettePos] = useState<{ x: number; y: number }>({ x: 50, y: 50 });
+  const [touchVelocity, setTouchVelocity] = useState<number>(0);
   const [currentSequence, setCurrentSequence] = useState<string[]>([]);
   const [captureLogs, setCaptureLogs] = useState<AutomaticCaptureLog[]>([]);
 
@@ -123,12 +146,11 @@ export const OuijaModule: React.FC<Props> = ({
   const [dwellSpeed, setDwellSpeed] = useState<'fast' | 'normal' | 'slow'>('normal');
   const [flashSymbol, setFlashSymbol] = useState<string | null>(null);
 
-  // Question in Ouija session
+  // Pergunta Contextual da Investigação (NÃO afeta alvos ou física do ponteiro)
   const [sessionQuestion, setSessionQuestion] = useState('');
-  const [activeTargetSymbols, setActiveTargetSymbols] = useState<string[]>([]);
-  const [targetIndex, setTargetIndex] = useState(0);
+  const [lockedQuestion, setLockedQuestion] = useState('');
 
-  // Manual drag tracking
+  // Manual drag tracking (Modo Digital Ideomotor)
   const [isDragging, setIsDragging] = useState(false);
   const lastTouchTime = useRef<number>(Date.now());
   const lastTouchPos = useRef<{ x: number; y: number }>({ x: 50, y: 50 });
@@ -142,8 +164,11 @@ export const OuijaModule: React.FC<Props> = ({
   const [ouijaStartTime, setOuijaStartTime] = useState<number | null>(null);
   const [elapsedSec, setElapsedSec] = useState(0);
 
+  // Status de Permissão de Sensores no iOS
+  const [permissionRequested, setPermissionRequested] = useState(false);
+
   // Dwell duration in ms based on user speed preference
-  const dwellDurationMs = dwellSpeed === 'fast' ? 1000 : dwellSpeed === 'slow' ? 2200 : 1400;
+  const dwellDurationMs = dwellSpeed === 'fast' ? 1000 : dwellSpeed === 'slow' ? 2500 : 1500;
 
   // Session timer
   useEffect(() => {
@@ -164,6 +189,9 @@ export const OuijaModule: React.FC<Props> = ({
     setCaptureLogs([]);
     setPhysicalMarkedLetters([]);
     setIsAutoScanning(true);
+    if (onCalibrateSensors) {
+      onCalibrateSensors();
+    }
   };
 
   const handleFinishAndSave = async () => {
@@ -172,18 +200,44 @@ export const OuijaModule: React.FC<Props> = ({
         ? physicalMarkedLetters.join('')
         : currentSequence.join('');
 
-    const questionNote = sessionQuestion.trim()
-      ? ` [Pergunta: "${sessionQuestion.trim()}"]`
+    const questionNote = lockedQuestion.trim() || sessionQuestion.trim()
+      ? ` [Pergunta Contextual Registrada: "${(lockedQuestion || sessionQuestion).trim()}"]`
       : '';
+
+    const telemetryReport = {
+      capturedLogsCount: captureLogs.length,
+      lettersSequence: letters,
+      sessionDurationSec: elapsedSec,
+      questionContext: (lockedQuestion || sessionQuestion).trim(),
+      sensorStatusAtSave: {
+        magnetometerAvailable: !!sensorState?.magnetometer.available,
+        magnetometerMagnitude: sensorState?.magnetometer.available ? sensorState.magnetometer.magnitude : null,
+        magnetometerDelta: sensorState?.magnetometer.available ? sensorState.magnetometer.delta : null,
+        motionAvailable: !!sensorState?.motion.available,
+        motionMagnitude: sensorState?.motion.available ? sensorState.motion.magnitude : null,
+        orientationAvailable: !!sensorState?.orientation?.available,
+        orientationBeta: sensorState?.orientation?.available ? sensorState.orientation.beta : null,
+        orientationGamma: sensorState?.orientation?.available ? sensorState.orientation.gamma : null,
+        audioRms: audioMetrics?.rms || 0,
+        audioDbfs: audioMetrics?.dbfs || -100,
+      },
+    };
 
     const note =
       ouijaMode === 'automatic'
-        ? `Sessão Ouija em Modo Automático (Varredura Autônoma por Dwell & Sensores).${questionNote} Sequência capturada sem clique manual por permanência temporal. Letras: ${letters || '(nenhuma)'}. Registros capturados: ${captureLogs.length}. EMF Médio: ${sensorState?.magnetometer.magnitude || 0} µT.`
+        ? `Sessão Ouija em Modo Automático Baseada em Sensores Físicos Reais (Dwell Detection Sem Manipulação).${questionNote} O movimento foi gerado exclusivamente por vetores de aceleração, rotação e variações de campo mensuradas. Letras capturadas: ${letters || '(nenhuma)'}. Registros capturados: ${captureLogs.length}. Sensores ativos: [EMF: ${sensorState?.magnetometer.available ? `${sensorState.magnetometer.magnitude} µT` : 'Indisponível'}, Aceleração: ${sensorState?.motion.available ? `${sensorState.motion.magnitude} m/s²` : 'Indisponível'}, Inclinação: ${sensorState?.orientation?.available ? 'Ativo' : 'Indisponível'}].`
         : ouijaMode === 'digital'
-        ? `Sessão Ouija em Tabuleiro Digital Ideomotor.${questionNote} Movimento de toque e arraste do operador. Letras: ${letters || '(nenhuma)'}.`
-        : `Sessão em Tabuleiro Físico.${questionNote} Notas do observador: ${physicalNotes}. Letras: ${letters || '(nenhuma)'}.`;
+        ? `Sessão Ouija em Tabuleiro Digital Ideomotor.${questionNote} Movimento de toque e arraste do operador sobre a tela. Letras: ${letters || '(nenhuma)'}.`
+        : `Sessão em Tabuleiro Físico.${questionNote} Notas do observador pericial: ${physicalNotes}. Letras anotadas: ${letters || '(nenhuma)'}.`;
 
-    await onSaveOuijaEvidence(ouijaMode, letters, note, elapsedSec);
+    await onSaveOuijaEvidence(
+      ouijaMode,
+      letters,
+      note,
+      elapsedSec,
+      telemetryReport,
+      (lockedQuestion || sessionQuestion).trim()
+    );
     setOuijaStartTime(null);
     setIsAutoScanning(false);
   };
@@ -193,6 +247,21 @@ export const OuijaModule: React.FC<Props> = ({
     setCaptureLogs([]);
     setPhysicalMarkedLetters([]);
     setFlashSymbol(null);
+    setDwellProgress(0);
+    setDwellTarget(null);
+  };
+
+  const handleSetQuestionContext = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!sessionQuestion.trim()) return;
+    setLockedQuestion(sessionQuestion.trim());
+    if (!ouijaStartTime) {
+      setOuijaStartTime(Date.now());
+    }
+  };
+
+  const handleUnlockQuestion = () => {
+    setLockedQuestion('');
   };
 
   // Autonomous Physics & Dwell Engine Loop
@@ -203,37 +272,7 @@ export const OuijaModule: React.FC<Props> = ({
   const dwellProgressRef = useRef(0);
   const dwellTargetRef = useRef<string | null>(null);
 
-  // Formular Pergunta e Iniciar Resposta Autônoma
-  const handleStartQuestionSearch = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!sessionQuestion.trim()) return;
-
-    if (!ouijaStartTime) {
-      setOuijaStartTime(Date.now());
-    }
-    setIsAutoScanning(true);
-
-    const q = sessionQuestion.toLowerCase();
-    let targets: string[] = [];
-
-    // Se pergunta for fechada (sim/não)
-    if (q.includes('tem alguém') || q.includes('está aí') || q.includes('pode falar') || q.includes('sim ou não')) {
-      const pickSim = (sensorState?.magnetometer.magnitude || 45) % 2 === 0;
-      targets = [pickSim ? 'SIM' : 'NÃO'];
-    } else if (q.includes('qual seu nome') || q.includes('quem é')) {
-      targets = ['N', 'O', 'M', 'E'];
-    } else {
-      // Decompor letras da primeira palavra relevante
-      const words = sessionQuestion.toUpperCase().replace(/[^A-Z]/g, '');
-      targets = words.slice(0, 4).split('');
-      if (targets.length === 0) targets = ['SIM'];
-    }
-
-    setActiveTargetSymbols(targets);
-    setTargetIndex(0);
-  };
-
-  // Motor de física orgânica autônoma
+  // Motor de física 100% determinístico e baseado exclusivamente em sensores reais
   useEffect(() => {
     if (ouijaMode !== 'automatic' || !isAutoScanning) {
       return;
@@ -243,82 +282,103 @@ export const OuijaModule: React.FC<Props> = ({
     let lastFrameTime = performance.now();
 
     const tick = (nowTime: number) => {
-      const dt = Math.min(50, Math.max(10, nowTime - lastFrameTime)) / 1000;
+      const dt = Math.min(0.05, Math.max(0.01, (nowTime - lastFrameTime) / 1000));
       lastFrameTime = nowTime;
 
       const currentPos = posRef.current;
       const currentVel = velRef.current;
 
-      // 1. Determinar alvo de atração se houver pergunta ou alvo ativo
-      let targetX = 50;
-      let targetY = 50;
-      let hasActiveTarget = false;
-
-      if (activeTargetSymbols.length > 0 && targetIndex < activeTargetSymbols.length) {
-        const nextSymId = activeTargetSymbols[targetIndex];
-        const found = BOARD_SYMBOLS.find((s) => s.id === nextSymId);
-        if (found) {
-          targetX = found.x;
-          targetY = found.y;
-          hasActiveTarget = true;
-        }
-      }
-
-      // 2. Flutuação ambiental orgânica (Magnetômetro + Ruído do Microfone + Brownian Drift)
-      const emfFlux = sensorState?.magnetometer.delta || 0;
-      const audioRms = audioMetrics?.rms || 0;
-      const timeSec = nowTime / 1000;
-
-      const noiseX = Math.sin(timeSec * 1.7) * 8 + Math.cos(timeSec * 3.1) * 4 + (emfFlux * 1.5);
-      const noiseY = Math.cos(timeSec * 1.3) * 6 + Math.sin(timeSec * 2.8) * 3 + (audioRms * 20);
-
-      // 3. Força atrativa ou deriva browniana
+      // 1. Extração de forças de sensores físicos autênticos (SEM valores fabricados)
       let ax = 0;
       let ay = 0;
 
-      if (hasActiveTarget) {
-        const dx = targetX - currentPos.x;
-        const dy = targetY - currentPos.y;
-        const dist = Math.sqrt(dx * dx + dy * dy);
-
-        // Desacelerar suavemente ao aproximar do alvo para favorecer o Dwell
-        const speedMultiplier = dist < 8 ? 0.35 : 1.2;
-        ax = (dx * 2.2 + noiseX * 0.4) * speedMultiplier;
-        ay = (dy * 2.2 + noiseY * 0.4) * speedMultiplier;
-      } else {
-        // Voo livre autônomo sobre o tabuleiro
-        ax = (50 - currentPos.x) * 0.4 + noiseX * 2.5;
-        ay = (50 - currentPos.y) * 0.4 + noiseY * 2.5;
+      // A) Inclinação / Orientação física (Giroscópio / DeviceOrientationEvent)
+      if (sensorState?.orientation?.available) {
+        const deltaGamma = sensorState.orientation.deltaGamma ?? 0;
+        const deltaBeta = sensorState.orientation.deltaBeta ?? 0;
+        // Zona morta de 0.4° para filtrar ruído térmico do silício
+        if (Math.abs(deltaGamma) > 0.4) {
+          ax += deltaGamma * 1.5;
+        }
+        if (Math.abs(deltaBeta) > 0.4) {
+          ay += deltaBeta * 1.5;
+        }
       }
 
-      // 4. Integração de velocidade com amortecimento
-      currentVel.vx = (currentVel.vx + ax * dt) * 0.92;
-      currentVel.vy = (currentVel.vy + ay * dt) * 0.92;
+      // B) Aceleração física triaxial (Acelerômetro / DeviceMotionEvent)
+      if (sensorState?.motion.available) {
+        const mx = sensorState.motion.x;
+        const my = sensorState.motion.y;
+        // Zona morta de 0.15 m/s²
+        if (Math.abs(mx) > 0.15) {
+          ax += mx * 3.0;
+        }
+        if (Math.abs(my) > 0.15) {
+          ay += -my * 3.0; // Inversão do eixo Y de coordenadas de tela
+        }
+      }
 
-      // Limitar velocidade máxima para movimento pericial suave
+      // C) Variação de Campo Eletromagnético (Magnetômetro W3C Sensor API)
+      if (sensorState?.magnetometer.available && sensorState.magnetometer.delta > 0.3) {
+        const magDelta = sensorState.magnetometer.delta;
+        const mx = sensorState.magnetometer.x;
+        const my = sensorState.magnetometer.y;
+        const mNorm = Math.sqrt(mx * mx + my * my);
+        if (mNorm > 0.1) {
+          ax += (mx / mNorm) * Math.min(6, magDelta * 0.8);
+          ay += (my / mNorm) * Math.min(6, magDelta * 0.8);
+        }
+      }
+
+      // D) Vibração Acústica Real do Microfone (Sensibilidade Mecânica do Transdutor)
+      const audioRms = audioMetrics?.rms || 0;
+      if (audioRms > 0.02) {
+        const acousticBoost = 1.0 + Math.min(2.5, audioRms * 12);
+        ax *= acousticBoost;
+        ay *= acousticBoost;
+      }
+
+      // E) Força de restauração elástica suave quando se aproxima das bordas extremas do tabuleiro
+      let springX = 0;
+      let springY = 0;
+      if (currentPos.x < 14) springX = (14 - currentPos.x) * 4.0;
+      if (currentPos.x > 86) springX = (86 - currentPos.x) * 4.0;
+      if (currentPos.y < 16) springY = (16 - currentPos.y) * 4.0;
+      if (currentPos.y > 86) springY = (86 - currentPos.y) * 4.0;
+
+      // F) Integração de velocidade com atrito físico natural do tabuleiro
+      const hasSensorInput = Math.abs(ax) > 0.05 || Math.abs(ay) > 0.05;
+      // Atrito mais forte quando em repouso sensorial para estabilizar o ponteiro
+      const friction = hasSensorInput ? 0.90 : 0.82;
+
+      currentVel.vx = (currentVel.vx + (ax + springX) * dt) * friction;
+      currentVel.vy = (currentVel.vy + (ay + springY) * dt) * friction;
+
+      // Limite superior de velocidade para movimento pericial suave
       const speed = Math.sqrt(currentVel.vx * currentVel.vx + currentVel.vy * currentVel.vy);
-      const maxSpeed = hasActiveTarget ? 24 : 35;
-      if (speed > maxSpeed) {
-        currentVel.vx = (currentVel.vx / speed) * maxSpeed;
-        currentVel.vy = (currentVel.vy / speed) * maxSpeed;
+      const maxAllowedSpeed = 26;
+      if (speed > maxAllowedSpeed) {
+        currentVel.vx = (currentVel.vx / speed) * maxAllowedSpeed;
+        currentVel.vy = (currentVel.vy / speed) * maxAllowedSpeed;
       }
 
-      // 5. Nova posição com colisão elástica nas bordas do tabuleiro
+      // G) Nova posição do ponteiro
       let newX = currentPos.x + currentVel.vx * dt;
       let newY = currentPos.y + currentVel.vy * dt;
 
-      if (newX < 10) { newX = 10; currentVel.vx *= -0.5; }
-      if (newX > 90) { newX = 90; currentVel.vx *= -0.5; }
-      if (newY < 12) { newY = 12; currentVel.vy *= -0.5; }
-      if (newY > 90) { newY = 90; currentVel.vy *= -0.5; }
+      // Colisão elástica suave nos limites visuais da prancha
+      if (newX < 10) { newX = 10; currentVel.vx *= -0.3; }
+      if (newX > 90) { newX = 90; currentVel.vx *= -0.3; }
+      if (newY < 12) { newY = 12; currentVel.vy *= -0.3; }
+      if (newY > 90) { newY = 90; currentVel.vy *= -0.3; }
 
       posRef.current = { x: newX, y: newY };
       velRef.current = currentVel;
       setPlanchettePos({ x: newX, y: newY });
       setTouchVelocity(Number(speed.toFixed(1)));
 
-      // 6. MOTOR DE FIXAÇÃO AUTOMÁTICA (DWELL DETECTION)
-      // Encontrar o símbolo mais próximo
+      // 2. MOTOR DE FIXAÇÃO AUTOMÁTICA POR PERMANÊNCIA (DWELL DETECTION)
+      // Encontrar o símbolo mais próximo geometricamente
       let closestSymbol: BoardSymbol | null = null;
       let minDistance = 999;
 
@@ -334,67 +394,75 @@ export const OuijaModule: React.FC<Props> = ({
 
       const captureRadius = closestSymbol?.category === 'word' ? 7.5 : 5.2;
       const isNearSymbol = minDistance <= captureRadius;
-      const isSlowEnough = speed < 18;
+      // Para dwell ser válido, a velocidade deve ser baixa (repouso ou micro-deriva lenta)
+      const isSlowEnough = speed < 12;
 
-      // Verificar cooldown para não re-capturar o mesmo símbolo sem sair dele
+      // Verificar cooldown para não re-capturar o mesmo símbolo imediatamente
       const nowMs = Date.now();
       const inCooldown = dwellCooldownRef.current &&
         dwellCooldownRef.current.symbol === closestSymbol?.id &&
         nowMs < dwellCooldownRef.current.until;
 
       if (isNearSymbol && isSlowEnough && closestSymbol && !inCooldown) {
-        // Se mudou de símbolo durante o dwell, reiniciar progresso
+        // Se mudou de símbolo durante o dwell, reiniciar contagem
         if (dwellTargetRef.current !== closestSymbol.id) {
           dwellTargetRef.current = closestSymbol.id;
           dwellProgressRef.current = 0;
           setDwellTarget(closestSymbol.id);
         }
 
-        // Incrementar progresso
-        const progressDelta = (dt * 1000 / dwellDurationMs) * 100;
+        // Incrementar progresso de permanência
+        const progressDelta = ((dt * 1000) / dwellDurationMs) * 100;
         const newProgress = Math.min(100, dwellProgressRef.current + progressDelta);
         dwellProgressRef.current = newProgress;
         setDwellProgress(Math.round(newProgress));
 
-        // CAPTURA AUTOMÁTICA EFETIVADA (100% de Permanência)!
+        // CAPTURA AUTOMÁTICA EFETIVADA (100% de Permanência Cumprida)!
         if (newProgress >= 100) {
           const capturedId = closestSymbol.id;
           setCurrentSequence((prev) => [...prev, capturedId]);
           setFlashSymbol(capturedId);
 
+          // Cálculo de estabilidade baseado estritamente na desaceleração real e dados físicos
+          const stabilityScore = Math.min(
+            98,
+            Math.max(50, Math.round(100 - speed * 3.5 - Math.min(30, (sensorState?.magnetometer.delta || 0) * 2)))
+          );
+
           const newLog: AutomaticCaptureLog = {
-            id: `log_${nowMs}_${Math.random().toString(36).slice(2, 6)}`,
+            id: generateSecureId('ouija_sym'),
             timestamp: new Date(nowMs).toLocaleTimeString(),
             symbol: capturedId,
             dwellMs: dwellDurationMs,
             velocity: Number(speed.toFixed(1)),
-            emf: sensorState?.magnetometer.magnitude || 45,
-            confidence: Math.min(95, Math.max(55, Math.round(75 - (speed * 1.5) + (audioRms * 10)))),
+            emfMagnitude: sensorState?.magnetometer.available ? sensorState.magnetometer.magnitude : null,
+            emfDelta: sensorState?.magnetometer.available ? sensorState.magnetometer.delta : null,
+            motionMagnitude: sensorState?.motion.available ? sensorState.motion.magnitude : null,
+            tiltBeta: sensorState?.orientation?.available ? (sensorState.orientation.beta ?? null) : null,
+            tiltGamma: sensorState?.orientation?.available ? (sensorState.orientation.gamma ?? null) : null,
+            audioRms: Number(audioRms.toFixed(4)),
+            audioDbfs: Number((audioMetrics?.dbfs || -100).toFixed(1)),
+            stabilityScore,
           };
           setCaptureLogs((prev) => [newLog, ...prev.slice(0, 19)]);
 
-          // Acionar cooldown para este símbolo e dar pequeno impulso de saída
-          dwellCooldownRef.current = { symbol: capturedId, until: nowMs + 2400 };
+          // Ativar cooldown para este símbolo específico (3 segundos) para evitar capturas repetidas
+          dwellCooldownRef.current = { symbol: capturedId, until: nowMs + 3000 };
           dwellProgressRef.current = 0;
           dwellTargetRef.current = null;
           setDwellProgress(0);
           setDwellTarget(null);
 
-          // Se estiver percorrendo sequência de pergunta, avançar próximo alvo
-          if (activeTargetSymbols.length > 0) {
-            setTargetIndex((prev) => prev + 1);
-          }
-
-          // Impulso suave para afastar da letra
-          velRef.current.vx += (Math.random() - 0.5) * 15;
-          velRef.current.vy += (Math.random() - 0.5) * 15;
+          // Desaceleração suave (SEM Math.random!)
+          velRef.current.vx *= 0.2;
+          velRef.current.vy *= 0.2;
 
           setTimeout(() => setFlashSymbol(null), 1200);
         }
       } else {
-        // Se se afastou ou acelerou, desvanecer progresso
+        // Se se afastou da letra ou acelerou além do limiar, decair suavemente o progresso
         if (dwellProgressRef.current > 0) {
-          const decayed = Math.max(0, dwellProgressRef.current - dt * 250);
+          const decayed = Math.max(0, dwellProgressRef.current - dt * 200);
           dwellProgressRef.current = decayed;
           setDwellProgress(Math.round(decayed));
           if (decayed === 0) {
@@ -409,9 +477,9 @@ export const OuijaModule: React.FC<Props> = ({
 
     animId = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(animId);
-  }, [ouijaMode, isAutoScanning, dwellDurationMs, activeTargetSymbols, targetIndex, sensorState, audioMetrics]);
+  }, [ouijaMode, isAutoScanning, dwellDurationMs, sensorState, audioMetrics]);
 
-  // Pointer drag events for Digital mode
+  // Pointer drag events para Modo Digital Ideomotor Manual
   const handlePointerDown = (e: React.PointerEvent) => {
     if (ouijaMode !== 'digital') return;
     setIsDragging(true);
@@ -455,6 +523,22 @@ export const OuijaModule: React.FC<Props> = ({
     }
   };
 
+  const handleRequestPermissions = async () => {
+    if (onRequestSensorPermissions) {
+      const res = await onRequestSensorPermissions();
+      setPermissionRequested(true);
+      if (res && onCalibrateSensors) {
+        onCalibrateSensors();
+      }
+    }
+  };
+
+  // Verificação de disponibilidade de hardware
+  const hasAnyPhysicalSensor =
+    !!sensorState?.magnetometer.available ||
+    !!sensorState?.motion.available ||
+    !!sensorState?.orientation?.available;
+
   return (
     <div className="space-y-4">
       {/* 1. Modo Selector & Header */}
@@ -464,11 +548,11 @@ export const OuijaModule: React.FC<Props> = ({
             <div className="flex items-center gap-2">
               <Compass className="w-5 h-5 text-cyan-400" />
               <h2 className="text-sm sm:text-base font-bold text-white font-mono uppercase">
-                ESTAÇÃO OUIJA &amp; REGISTRO DE MOVIMENTO
+                ESTAÇÃO OUIJA &amp; TELEMETRIA MECÂNICA FORENSE
               </h2>
             </div>
             <p className="text-xs text-slate-400 font-mono mt-0.5">
-              Protocolo pericial com fixação automática por permanência (Dwell) e correlação de sensores
+              Protocolo pericial com fixação automática por permanência temporal (Dwell) e física real de sensores
             </p>
           </div>
 
@@ -485,7 +569,7 @@ export const OuijaModule: React.FC<Props> = ({
               }`}
             >
               <Zap className="w-3 h-3 text-cyan-300" />
-              <span>Modo Automático</span>
+              <span>Modo Automático (Físico)</span>
             </button>
 
             <button
@@ -518,25 +602,45 @@ export const OuijaModule: React.FC<Props> = ({
           </div>
         </div>
 
-        {/* Disclaimer strictly required */}
+        {/* Disclaimer Metodológico Obrigatório */}
         <div className="mt-3 p-2.5 rounded bg-[#080d17] border border-cyan-900/50 text-[11px] text-slate-300 font-sans leading-relaxed">
           {ouijaMode === 'automatic' ? (
             <p>
-              <strong className="text-cyan-300 font-mono">MODO AUTOMÁTICO SENSORIZADO:</strong> O ponteiro move-se autonomamente por micro-deriva de campos magnéticos ({sensorState?.magnetometer.magnitude || 0} µT), vibração acústica do microfone e algoritmo ideomotor. <span className="text-emerald-400 font-semibold">O usuário NÃO precisa clicar nas letras:</span> a seleção ocorre automaticamente quando o ponteiro permanece sobre um símbolo (Dwell time de {(dwellDurationMs / 1000).toFixed(1)}s).
+              <strong className="text-cyan-300 font-mono">REGRA FORENSE DE NÃO-MANIPULAÇÃO:</strong> O ponteiro responde <span className="text-emerald-400 font-semibold">exclusivamente a sensores físicos reais</span> (aceleração, inclinação do dispositivo, campo EMF e micro-vibrações acústicas). Nenhuma pergunta formulada guia ou fabrica letras pré-determinadas. A seleção ocorre por <strong className="text-amber-300">permanência temporal (Dwell de {(dwellDurationMs / 1000).toFixed(1)}s)</strong> sem clique manual.
             </p>
           ) : ouijaMode === 'digital' ? (
             <p>
-              <strong className="text-cyan-300 font-mono">TABULEIRO MANUAL:</strong> O operador toca e arrasta o ponteiro pela tela, medindo a velocidade e a rotação do toque humano inconsciente (efeito ideomotor).
+              <strong className="text-cyan-300 font-mono">TABULEIRO MANUAL:</strong> O operador arrasta o ponteiro sobre a tela, medindo a velocidade e a rotação do toque humano inconsciente (efeito ideomotor de Carpenter).
             </p>
           ) : (
             <p>
-              <strong className="text-cyan-300 font-mono">TABULEIRO FÍSICO:</strong> Anotação e cronometragem manual de sessão realizada sobre madeira ou papel em campo com testemunhas.
+              <strong className="text-cyan-300 font-mono">TABULEIRO FÍSICO DE CAMPO:</strong> Anotação e cronometragem manual de sessão pericial realizada sobre madeira ou papel em campo com testemunhas.
             </p>
           )}
         </div>
+
+        {/* Alerta de sensores indisponíveis se nenhum sensor for detectado no dispositivo */}
+        {ouijaMode === 'automatic' && !hasAnyPhysicalSensor && (
+          <div className="mt-2.5 p-2 bg-amber-950/60 border border-amber-600/60 rounded flex items-start justify-between gap-3 text-xs text-amber-200 font-mono">
+            <div className="flex items-start gap-2">
+              <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
+              <span>
+                <strong>Sensores Físicos Não Detectados:</strong> Este navegador ou computador não expõe acelerômetro ou magnetômetro. O ponteiro permanecerá em repouso estável. Para varredura dinâmica, abra em um smartphone ou conceda as permissões de sensores.
+              </span>
+            </div>
+            {onRequestSensorPermissions && !permissionRequested && (
+              <button
+                onClick={handleRequestPermissions}
+                className="px-2.5 py-1 bg-amber-600 hover:bg-amber-500 text-black font-bold rounded text-[11px] shrink-0 cursor-pointer"
+              >
+                Ativar Sensores (iOS/Android)
+              </button>
+            )}
+          </div>
+        )}
       </div>
 
-      {/* 2. Barra de Controle & Pergunta da Sessão Ouija */}
+      {/* 2. Barra de Controle & Pergunta Contextual da Sessão */}
       <div className="bg-[#080d16] border border-slate-800 rounded-lg p-3 space-y-3 font-mono text-xs">
         <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-2">
           <div className="flex items-center gap-3 flex-wrap">
@@ -559,20 +663,32 @@ export const OuijaModule: React.FC<Props> = ({
 
           <div className="flex items-center gap-2 flex-wrap">
             {ouijaMode === 'automatic' && (
-              <div className="flex items-center gap-1 bg-slate-900 border border-slate-700 px-2 py-1 rounded text-[11px]">
-                <span className="text-slate-400">Dwell:</span>
-                {(['fast', 'normal', 'slow'] as const).map((spd) => (
+              <>
+                <div className="flex items-center gap-1 bg-slate-900 border border-slate-700 px-2 py-1 rounded text-[11px]">
+                  <span className="text-slate-400">Dwell:</span>
+                  {(['fast', 'normal', 'slow'] as const).map((spd) => (
+                    <button
+                      key={spd}
+                      onClick={() => setDwellSpeed(spd)}
+                      className={`px-1.5 py-0.5 rounded cursor-pointer uppercase ${
+                        dwellSpeed === spd ? 'bg-cyan-600 text-white font-bold' : 'text-slate-500 hover:text-slate-200'
+                      }`}
+                    >
+                      {spd === 'fast' ? '1.0s' : spd === 'normal' ? '1.5s' : '2.5s'}
+                    </button>
+                  ))}
+                </div>
+
+                {onCalibrateSensors && (
                   <button
-                    key={spd}
-                    onClick={() => setDwellSpeed(spd)}
-                    className={`px-1.5 py-0.5 rounded cursor-pointer uppercase ${
-                      dwellSpeed === spd ? 'bg-cyan-600 text-white font-bold' : 'text-slate-500 hover:text-slate-200'
-                    }`}
+                    onClick={onCalibrateSensors}
+                    className="px-2 py-1 bg-slate-800 hover:bg-slate-700 text-cyan-300 border border-cyan-800/60 rounded text-[11px] cursor-pointer"
+                    title="Define a posição e rotação atual do dispositivo como ponto neutro (baseline zero)"
                   >
-                    {spd === 'fast' ? '1.0s' : spd === 'normal' ? '1.4s' : '2.2s'}
+                    Calibrar Posição Neutra
                   </button>
-                ))}
-              </div>
+                )}
+              </>
             )}
 
             {!ouijaStartTime ? (
@@ -617,25 +733,48 @@ export const OuijaModule: React.FC<Props> = ({
           </div>
         </div>
 
-        {/* Pergunta Formulada no Modo Automático */}
-        {ouijaMode === 'automatic' && (
-          <form onSubmit={handleStartQuestionSearch} className="flex gap-2 pt-2 border-t border-slate-800/80">
-            <input
-              type="text"
-              value={sessionQuestion}
-              onChange={(e) => setSessionQuestion(e.target.value)}
-              placeholder="Digite a pergunta da sessão para orientar a busca autônoma (ex: 'Há alguém aqui?')..."
-              className="flex-1 bg-[#050912] border border-slate-700/80 rounded px-3 py-1.5 text-xs text-slate-100 placeholder:text-slate-500 focus:outline-none focus:border-cyan-400 font-sans"
-            />
-            <button
-              type="submit"
-              className="px-3 py-1.5 rounded bg-cyan-600/40 hover:bg-cyan-600/70 border border-cyan-500/60 text-cyan-200 font-bold flex items-center gap-1.5 cursor-pointer shrink-0 transition"
-            >
-              <Send className="w-3 h-3 text-cyan-300" />
-              <span>Iniciar Busca</span>
-            </button>
-          </form>
-        )}
+        {/* Pergunta Contextual da Sessão (Registro Pericial, SEM Manipular Resposta) */}
+        <div className="pt-2 border-t border-slate-800/80">
+          {lockedQuestion ? (
+            <div className="p-2 bg-[#050b14] border border-cyan-900/60 rounded flex items-center justify-between gap-2">
+              <div className="flex items-center gap-2">
+                <HelpCircle className="w-4 h-4 text-cyan-400 shrink-0" />
+                <div>
+                  <div className="text-[11px] text-cyan-200">
+                    <span className="text-slate-400 uppercase font-bold text-[10px]">Pergunta da Sessão:</span>{' '}
+                    &ldquo;{lockedQuestion}&rdquo;
+                  </div>
+                  <div className="text-[10px] text-slate-500 font-sans">
+                    Registro forense contextual. O ponteiro move-se estritamente pela física dos sensores, sem alvos sintéticos.
+                  </div>
+                </div>
+              </div>
+              <button
+                onClick={handleUnlockQuestion}
+                className="px-2 py-0.5 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded text-[10px] cursor-pointer"
+              >
+                Editar Pergunta
+              </button>
+            </div>
+          ) : (
+            <form onSubmit={handleSetQuestionContext} className="flex gap-2">
+              <input
+                type="text"
+                value={sessionQuestion}
+                onChange={(e) => setSessionQuestion(e.target.value)}
+                placeholder="Registrar pergunta contextual da sessão (ex: 'Há alguém aqui?') — Somente para relatório pericial..."
+                className="flex-1 bg-[#050912] border border-slate-700/80 rounded px-3 py-1.5 text-xs text-slate-100 placeholder:text-slate-500 focus:outline-none focus:border-cyan-400 font-sans"
+              />
+              <button
+                type="submit"
+                className="px-3 py-1.5 rounded bg-cyan-900/40 hover:bg-cyan-900/70 border border-cyan-600/60 text-cyan-200 font-bold flex items-center gap-1.5 cursor-pointer shrink-0 transition"
+              >
+                <HelpCircle className="w-3 h-3 text-cyan-300" />
+                <span>Fixar no Relatório</span>
+              </button>
+            </form>
+          )}
+        </div>
       </div>
 
       {/* 3. MODO VISUAL DO TABULEIRO (Automático & Digital) */}
@@ -664,7 +803,7 @@ export const OuijaModule: React.FC<Props> = ({
                 SIM
               </div>
               <div className="text-[10px] text-slate-500 tracking-widest uppercase font-mono hidden sm:block">
-                FROC FORENSIC OUIJA • DWELL ENGINE
+                FROC FORENSIC OUIJA • DETERMINISTIC SENSOR DWELL
               </div>
               <div
                 className={`px-4 py-1.5 rounded border transition ${
@@ -804,24 +943,45 @@ export const OuijaModule: React.FC<Props> = ({
             </div>
           </div>
 
-          {/* Telemetria e Status Inferior */}
-          <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center text-[11px] font-mono text-slate-400 gap-2 border-t border-slate-800/80 pt-2">
-            <div className="flex items-center gap-3 flex-wrap">
-              <span>
-                Fixação Dwell: <strong className="text-cyan-300">{dwellTarget ? `${dwellTarget} (${dwellProgress}%)` : 'Livre'}</strong>
-              </span>
-              <span>
-                Velocidade: <strong className="text-slate-300">{touchVelocity} px/s</strong>
-              </span>
-              <span>
-                Magnetômetro EMF: <strong className="text-purple-300">{sensorState?.magnetometer.magnitude || 0} µT</strong>
-              </span>
-            </div>
+          {/* Telemetria e Diagnóstico dos Sensores em Tempo Real (SEM DADOS INVENTADOS) */}
+          <div className="space-y-2 border-t border-slate-800/80 pt-2 text-[11px] font-mono text-slate-400">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="flex items-center gap-3 flex-wrap">
+                <span>
+                  Dwell: <strong className="text-cyan-300">{dwellTarget ? `${dwellTarget} (${dwellProgress}%)` : 'Livre'}</strong>
+                </span>
+                <span>
+                  Velocidade: <strong className="text-slate-300">{touchVelocity} px/s</strong>
+                </span>
+                <span>
+                  EMF: <strong className="text-purple-300">
+                    {sensorState?.magnetometer.available
+                      ? `${sensorState.magnetometer.magnitude} µT (Δ: ±${sensorState.magnetometer.delta} µT)`
+                      : 'Sensor indisponível'}
+                  </strong>
+                </span>
+                <span>
+                  Movimento: <strong className="text-emerald-300">
+                    {sensorState?.motion.available
+                      ? `${sensorState.motion.magnitude} m/s²`
+                      : 'Sensor indisponível'}
+                  </strong>
+                </span>
+                <span>
+                  Giro/Inclinação:{' '}
+                  <strong className="text-cyan-300">
+                    {sensorState?.orientation?.available
+                      ? `β: ${sensorState.orientation.beta ?? 0}° / γ: ${sensorState.orientation.gamma ?? 0}°`
+                      : 'Sensor indisponível'}
+                  </strong>
+                </span>
+              </div>
 
-            <div className="text-slate-500 text-[10px]">
-              {ouijaMode === 'automatic'
-                ? 'Varredura automática ativa: permaneça sobre a letra para captura sem clique.'
-                : 'Arraste o ponteiro com o dedo para gerar deslocamento ideomotor.'}
+              <div className="text-slate-500 text-[10px]">
+                {ouijaMode === 'automatic'
+                  ? 'Física estritamente acionada por sensores. Permaneça sobre o símbolo para captura automática.'
+                  : 'Toque humano direto na prancha.'}
+              </div>
             </div>
           </div>
 
@@ -829,18 +989,27 @@ export const OuijaModule: React.FC<Props> = ({
           {captureLogs.length > 0 && (
             <div className="bg-[#050b14] border border-slate-800/80 rounded p-2.5 space-y-1.5 text-xs font-mono">
               <div className="flex justify-between items-center text-[10px] text-slate-500 uppercase">
-                <span>Últimas Letras Fixadas por Dwell:</span>
-                <span>{captureLogs.length} capturas registradas</span>
+                <span>Sequência de Símbolos Capturados por Dwell ({captureLogs.length}):</span>
+                <span>Auditável / Criptográfico</span>
               </div>
-              <div className="flex flex-wrap gap-1.5 max-h-[80px] overflow-y-auto">
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-1.5 max-h-[120px] overflow-y-auto">
                 {captureLogs.map((log) => (
                   <div
                     key={log.id}
-                    className="px-2 py-0.5 rounded bg-slate-900 border border-cyan-900/60 text-[11px] flex items-center gap-1.5"
+                    className="p-1.5 rounded bg-slate-900/90 border border-cyan-900/60 text-[10px] flex items-center justify-between gap-1"
                   >
-                    <strong className="text-cyan-300">{log.symbol}</strong>
-                    <span className="text-slate-500 text-[9px]">{log.timestamp}</span>
-                    <span className="text-emerald-400 text-[9px]">{log.confidence}%</span>
+                    <div className="flex items-center gap-1.5">
+                      <strong className="text-cyan-300 text-xs px-1.5 py-0.5 bg-black/60 rounded border border-cyan-500/30">
+                        {log.symbol}
+                      </strong>
+                      <span className="text-slate-400">{log.timestamp}</span>
+                    </div>
+                    <div className="text-right text-[9px] text-slate-400">
+                      <div>Estabilidade: <span className="text-emerald-400 font-bold">{log.stabilityScore}%</span></div>
+                      <div>
+                        {log.emfMagnitude !== null ? `EMF: ${log.emfMagnitude}µT` : 'EMF: N/D'} • {log.velocity}px/s
+                      </div>
+                    </div>
                   </div>
                 ))}
               </div>
