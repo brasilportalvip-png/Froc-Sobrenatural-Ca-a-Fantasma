@@ -20,6 +20,7 @@ export interface SensorReadings {
     delta: number;
     unit: string;
     statusText: string;
+    includesGravity?: boolean;
     rotationRate?: {
       alpha: number | null;
       beta: number | null;
@@ -80,6 +81,19 @@ export class SensorEngine {
   private motionListener: ((e: DeviceMotionEvent) => void) | null = null;
   private orientationListener: ((e: DeviceOrientationEvent) => void) | null = null;
 
+  private samplesHistory = {
+    mag: [] as number[],
+    motion: [] as number[],
+    beta: [] as number[],
+    gamma: [] as number[],
+  };
+
+  private pushSample(type: 'mag' | 'motion' | 'beta' | 'gamma', value: number) {
+    const list = this.samplesHistory[type];
+    list.push(value);
+    if (list.length > 50) list.shift();
+  }
+
   public async initSensors(): Promise<void> {
     // 1. Try W3C Generic Sensor API for Magnetometer
     if (typeof window !== 'undefined' && 'Magnetometer' in window) {
@@ -91,6 +105,7 @@ export class SensorEngine {
           const y = this.magnetometerInstance.y || 0;
           const z = this.magnetometerInstance.z || 0;
           const magnitude = Math.sqrt(x * x + y * y + z * z);
+          this.pushSample('mag', magnitude);
           if (this.currentReadings.magnetometer.baseline === 0 && magnitude > 0) {
             this.currentReadings.magnetometer.baseline = Number(magnitude.toFixed(2));
           }
@@ -193,12 +208,18 @@ export class SensorEngine {
   private attachMotionListener() {
     if (this.motionListener || typeof window === 'undefined') return;
     this.motionListener = (event: DeviceMotionEvent) => {
-      const acc = event.acceleration || event.accelerationIncludingGravity;
+      // Prioridade: Aceleração linear pura (sem a gravidade da Terra de 9.8 m/s²)
+      const hasLinear = event.acceleration && event.acceleration.x !== null;
+      const acc = hasLinear ? event.acceleration! : event.accelerationIncludingGravity;
+      const includesGravity = !hasLinear && !!event.accelerationIncludingGravity;
+
       if (acc) {
         const x = acc.x || 0;
         const y = acc.y || 0;
         const z = acc.z || 0;
         const magnitude = Math.sqrt(x * x + y * y + z * z);
+        this.pushSample('motion', magnitude);
+
         if (this.currentReadings.motion.baseline === 0 && magnitude > 0) {
           this.currentReadings.motion.baseline = Number(magnitude.toFixed(2));
         }
@@ -213,6 +234,10 @@ export class SensorEngine {
           };
         }
 
+        const statusText = hasLinear
+          ? 'Acelerômetro linear puro (sem vetor gravidade)'
+          : 'Acelerômetro bruto com gravidade integrada (1G)';
+
         this.currentReadings.motion = {
           available: true,
           x: Number(x.toFixed(2)),
@@ -222,7 +247,8 @@ export class SensorEngine {
           baseline: this.currentReadings.motion.baseline,
           delta: Number(delta.toFixed(2)),
           unit: 'm/s²',
-          statusText: 'Acelerômetro triaxial ativo',
+          statusText,
+          includesGravity,
           rotationRate,
         };
       }
@@ -236,6 +262,9 @@ export class SensorEngine {
       const alpha = event.alpha !== null ? Number(event.alpha.toFixed(1)) : null;
       const beta = event.beta !== null ? Number(event.beta.toFixed(1)) : null;
       const gamma = event.gamma !== null ? Number(event.gamma.toFixed(1)) : null;
+
+      if (beta !== null) this.pushSample('beta', beta);
+      if (gamma !== null) this.pushSample('gamma', gamma);
 
       if (this.currentReadings.orientation.baselineBeta === 0 && beta !== null) {
         this.currentReadings.orientation.baselineBeta = beta;
@@ -263,33 +292,126 @@ export class SensorEngine {
   }
 
   public calibrateMagneticBaseline(): void {
-    if (this.currentReadings.magnetometer.available && this.currentReadings.magnetometer.magnitude > 0) {
+    const magList = this.samplesHistory.mag;
+    if (magList.length > 0) {
+      const avg = magList.reduce((a, b) => a + b, 0) / magList.length;
+      this.currentReadings.magnetometer.baseline = Number(avg.toFixed(2));
+      this.currentReadings.magnetometer.delta = 0;
+    } else if (this.currentReadings.magnetometer.available && this.currentReadings.magnetometer.magnitude > 0) {
       this.currentReadings.magnetometer.baseline = this.currentReadings.magnetometer.magnitude;
       this.currentReadings.magnetometer.delta = 0;
     }
   }
 
+  /**
+   * Calibração Multi-Amostra: calcula a média aritmética das últimas leituras
+   * para eliminar transientes e ruídos momentâneos de bancada.
+   */
   public calibrateSensors(): void {
-    // Magnetômetro baseline
+    // 1. Magnetômetro: média das amostras recentes
     this.calibrateMagneticBaseline();
 
-    // Acelerômetro baseline
-    if (this.currentReadings.motion.available && this.currentReadings.motion.magnitude > 0) {
+    // 2. Acelerômetro: média das amostras recentes
+    const motionList = this.samplesHistory.motion;
+    if (motionList.length > 0) {
+      const avgMotion = motionList.reduce((a, b) => a + b, 0) / motionList.length;
+      this.currentReadings.motion.baseline = Number(avgMotion.toFixed(2));
+      this.currentReadings.motion.delta = 0;
+    } else if (this.currentReadings.motion.available && this.currentReadings.motion.magnitude > 0) {
       this.currentReadings.motion.baseline = this.currentReadings.motion.magnitude;
       this.currentReadings.motion.delta = 0;
     }
 
-    // Orientação baseline (inclinação zero na posição atual)
-    if (this.currentReadings.orientation.available) {
-      if (this.currentReadings.orientation.beta !== null) {
-        this.currentReadings.orientation.baselineBeta = this.currentReadings.orientation.beta;
-        this.currentReadings.orientation.deltaBeta = 0;
+    // 3. Orientação: média das amostras recentes
+    const betaList = this.samplesHistory.beta;
+    if (betaList.length > 0) {
+      const avgBeta = betaList.reduce((a, b) => a + b, 0) / betaList.length;
+      this.currentReadings.orientation.baselineBeta = Number(avgBeta.toFixed(2));
+      this.currentReadings.orientation.deltaBeta = 0;
+    } else if (this.currentReadings.orientation.beta !== null) {
+      this.currentReadings.orientation.baselineBeta = this.currentReadings.orientation.beta;
+      this.currentReadings.orientation.deltaBeta = 0;
+    }
+
+    const gammaList = this.samplesHistory.gamma;
+    if (gammaList.length > 0) {
+      const avgGamma = gammaList.reduce((a, b) => a + b, 0) / gammaList.length;
+      this.currentReadings.orientation.baselineGamma = Number(avgGamma.toFixed(2));
+      this.currentReadings.orientation.deltaGamma = 0;
+    } else if (this.currentReadings.orientation.gamma !== null) {
+      this.currentReadings.orientation.baselineGamma = this.currentReadings.orientation.gamma;
+      this.currentReadings.orientation.deltaGamma = 0;
+    }
+  }
+
+  /**
+   * Calibração Ativa Multi-Amostra com Janela Temporal de Medição
+   * Coleta ativamente N amostras temporais espaçadas para calcular baseline estatístico estável.
+   */
+  public async calibrateSensorsMultiSample(
+    sampleCount: number = 20,
+    intervalMs: number = 25
+  ): Promise<{
+    samplesCount: number;
+    magBaseline: number;
+    motionBaseline: number;
+    betaBaseline: number;
+    gammaBaseline: number;
+  }> {
+    const gathered = {
+      mag: [] as number[],
+      motion: [] as number[],
+      beta: [] as number[],
+      gamma: [] as number[],
+    };
+
+    for (let i = 0; i < sampleCount; i++) {
+      if (this.currentReadings.magnetometer.available && this.currentReadings.magnetometer.magnitude > 0) {
+        gathered.mag.push(this.currentReadings.magnetometer.magnitude);
       }
-      if (this.currentReadings.orientation.gamma !== null) {
-        this.currentReadings.orientation.baselineGamma = this.currentReadings.orientation.gamma;
-        this.currentReadings.orientation.deltaGamma = 0;
+      if (this.currentReadings.motion.available && this.currentReadings.motion.magnitude > 0) {
+        gathered.motion.push(this.currentReadings.motion.magnitude);
+      }
+      if (this.currentReadings.orientation.available) {
+        if (this.currentReadings.orientation.beta !== null) gathered.beta.push(this.currentReadings.orientation.beta);
+        if (this.currentReadings.orientation.gamma !== null) gathered.gamma.push(this.currentReadings.orientation.gamma);
+      }
+      if (intervalMs > 0 && i < sampleCount - 1) {
+        await new Promise((r) => setTimeout(r, intervalMs));
       }
     }
+
+    const calcAvg = (arr: number[]) => (arr.length > 0 ? arr.reduce((a, b) => a + b, 0) / arr.length : 0);
+
+    const magBase = calcAvg(gathered.mag);
+    const motionBase = calcAvg(gathered.motion);
+    const betaBase = calcAvg(gathered.beta);
+    const gammaBase = calcAvg(gathered.gamma);
+
+    if (magBase > 0) {
+      this.currentReadings.magnetometer.baseline = Number(magBase.toFixed(2));
+      this.currentReadings.magnetometer.delta = 0;
+    }
+    if (motionBase > 0) {
+      this.currentReadings.motion.baseline = Number(motionBase.toFixed(2));
+      this.currentReadings.motion.delta = 0;
+    }
+    if (gathered.beta.length > 0) {
+      this.currentReadings.orientation.baselineBeta = Number(betaBase.toFixed(2));
+      this.currentReadings.orientation.deltaBeta = 0;
+    }
+    if (gathered.gamma.length > 0) {
+      this.currentReadings.orientation.baselineGamma = Number(gammaBase.toFixed(2));
+      this.currentReadings.orientation.deltaGamma = 0;
+    }
+
+    return {
+      samplesCount: Math.max(gathered.mag.length, gathered.motion.length, gathered.beta.length, 1),
+      magBaseline: this.currentReadings.magnetometer.baseline,
+      motionBaseline: this.currentReadings.motion.baseline,
+      betaBaseline: this.currentReadings.orientation.baselineBeta,
+      gammaBaseline: this.currentReadings.orientation.baselineGamma,
+    };
   }
 
   public getReadings(): SensorReadings {

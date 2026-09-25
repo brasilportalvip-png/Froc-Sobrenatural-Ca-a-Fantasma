@@ -428,13 +428,13 @@ export const UserPanel: React.FC<UserPanelProps> = ({
             <div className="bg-[#070d18] border border-slate-800 rounded-xl p-5 space-y-3">
               <h4 className="text-xs font-bold font-mono text-cyan-300 flex items-center gap-2">
                 <ShieldCheck className="w-4 h-4 text-cyan-400" />
-                Custo Transparente por Consulta
+                Política Comercial &amp; Sessões das Ferramentas
               </h4>
               <ul className="text-xs text-slate-400 space-y-2 font-mono">
-                <li>• **Análise Espectral de Áudio & IA**: 5 créditos por consulta efetiva</li>
-                <li>• Chat Metodológico de Investigação: 5 créditos por consulta concluída.</li>
-                <li>• **Sensores, Ouija, Câmera e Teste Duplo-Cego**: 100% locais e gratuitos (0 créditos)</li>
-                <li>• **Reserva Atômica**: Se a IA falhar ou o modelo estiver indisponível, os 5 créditos são integralmente estornados.</li>
+                <li>• <strong>Sessões de Ferramentas</strong>: 5 créditos por 4 minutos (240s) de operação contínua.</li>
+                <li>• <strong>Análise &amp; Chat em Sessão</strong>: Isentos de débito avulso quando executados durante a sessão ativa da ferramenta.</li>
+                <li>• <strong>Sensores Físicos Brutos</strong>: Telemetria magnética e acelerômetro 100% livres (0 créditos).</li>
+                <li>• <strong>Proteção de Auto-Renovação</strong>: Limitada a 5 ciclos consecutivos com estorno atômico se houver falha de rede.</li>
               </ul>
             </div>
 

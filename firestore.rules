@@ -56,11 +56,26 @@ service cloud.firestore {
       allow write: if false;
     }
 
-    // Evidence & Media references stored in Firestore
+    // Tool Session Locks: Locks determinísticos por UID + ToolId (Gerenciados exclusivamente pelo Admin SDK)
+    match /toolSessionLocks/{lockId} {
+      allow read: if isAuthenticated() && resource.data.uid == request.auth.uid;
+      allow write: if false;
+    }
+
+    // Evidence & Media references stored in Firestore (Cadeia de Custódia Forense com Imutabilidade Estrita)
+    // Registros forenses de campo não podem ser apagados pelo cliente (allow delete: if false)
+    // Edições são permitidas apenas se preservarem estritamente uid, sessionId, timestamp, photoDataUrl e signalData
     match /evidence/{evidenceId} {
       allow read: if isAuthenticated() && resource.data.uid == request.auth.uid;
       allow create: if isAuthenticated() && request.resource.data.uid == request.auth.uid;
-      allow update, delete: if isAuthenticated() && resource.data.uid == request.auth.uid;
+      allow update: if isAuthenticated() &&
+        resource.data.uid == request.auth.uid &&
+        request.resource.data.uid == resource.data.uid &&
+        request.resource.data.sessionId == resource.data.sessionId &&
+        request.resource.data.timestamp == resource.data.timestamp &&
+        (!('photoDataUrl' in resource.data) || request.resource.data.photoDataUrl == resource.data.photoDataUrl) &&
+        (!('signalData' in resource.data) || request.resource.data.signalData == resource.data.signalData);
+      allow delete: if false; // Imutabilidade da cadeia de custódia forense
     }
 
     // Payment events, audit logs, risk events: Internal only, never readable by standard clients

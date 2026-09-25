@@ -63,8 +63,9 @@ export const BlindTestModule: React.FC<Props> = ({ activeSession, onLogEvidence 
       .join('');
     const hash = await sha256(`${salt}:${sealedSecretAnswer}`);
 
+    const btSuffix = typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID().slice(0, 8) : Date.now().toString(36);
     const newTest: BlindTestItem = {
-      id: `bt_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+      id: `bt_${Date.now()}_${btSuffix}`,
       sessionId: activeSession.id,
       targetSubject: targetSubject.trim(),
       sealedHash: hash,

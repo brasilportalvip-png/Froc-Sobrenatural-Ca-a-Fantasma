@@ -546,7 +546,8 @@ export async function adminAdjustCredits(params: {
 
     const previousBalance = wallet.balance;
     const now = Date.now();
-    const operationId = `admin_adj_${now}_${Math.random().toString(36).substring(2, 8)}`;
+    const opSuffix = typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID().slice(0, 8) : Date.now().toString(36);
+    const operationId = `admin_adj_${now}_${opSuffix}`;
 
     const receipt = {
       operationId,

@@ -205,7 +205,8 @@ export const CommunicationModule: React.FC<Props> = ({
           if (chunk && chunk.blob.size > 2000) {
             LiveCaptionsEngine.recordAiCall(rateLimiterRef.current, audioMetrics);
             const token = await getIdToken();
-            const persistentReqId = `chunk_${activeToolSessionId || 'comm'}_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+            const secureSuffix = typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID().slice(0, 8) : Date.now().toString(36);
+            const persistentReqId = `chunk_${activeToolSessionId || 'comm'}_${Date.now()}_${secureSuffix}`;
             const base64Audio = await new Promise<string>((res) => {
               const reader = new FileReader();
               reader.onloadend = () => {
@@ -263,8 +264,9 @@ export const CommunicationModule: React.FC<Props> = ({
                 candidate = null;
               }
 
+              const evtSuffix = typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID().slice(0, 8) : Date.now().toString(36);
               const newEvt: LiveCaptionEvent = {
-                id: `evt_${now}_${Math.random().toString(36).slice(2, 6)}`,
+                id: `evt_${now}_${evtSuffix}`,
                 timestampFormatted: timeFormatted,
                 timestampMs: now,
                 status: candidate ? 'possible_speech' : 'no_speech',
@@ -760,7 +762,7 @@ export const CommunicationModule: React.FC<Props> = ({
                 <strong>[AVISO DE PRIVACIDADE]</strong> Trecho de áudio selecionado sendo enviado para análise forense neural (Gemini)...
               </span>
             </div>
-            <span className="text-[10px] text-cyan-400 uppercase hidden sm:inline">Criptografia Ponta a Ponta</span>
+            <span className="text-[10px] text-cyan-400 uppercase hidden sm:inline">Tráfego Protegido via TLS 1.3</span>
           </div>
         )}
 

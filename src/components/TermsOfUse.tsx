@@ -52,10 +52,13 @@ export const TermsOfUse: React.FC<{ onBackToApp: () => void }> = ({ onBackToApp 
                 <strong>Bônus de Boas-Vindas:</strong> Usuários com e-mail verificado podem resgatar uma única vez 25 créditos de cortesia para testar a plataforma.
               </li>
               <li>
-                <strong>Consumo por Consulta Pericial:</strong> Cada solicitação de análise forense de áudio ou interação no chat investigativo assistido consome <strong>5 créditos</strong> da carteira.
+                <strong>Sessões Temporizadas de Ferramentas:</strong> Ferramentas analíticas e investigativas (Visão Low-Light, Ouija Digital, Teste Duplo-Cego, Cadeia de Evidências e Comunicação) operam por sessões temporizadas de <strong>4 minutos por 5 créditos</strong>. Durante a vigência de uma sessão ativa, análises e interações de chat são isentas de cobrança avulsa. A auto-renovação é opcional e limitada a no máximo 5 ciclos consecutivos por segurança.
               </li>
               <li>
-                <strong>Procedimento Transacional:</strong> Ao iniciar uma consulta, 5 créditos são primeiramente reservados (`reserved`). Se a análise for processada com êxito pelo modelo de IA, os 5 créditos são debitados em definitivo (`spent`).
+                <strong>Sensores Físicos Brutos:</strong> A leitura direta de sensores de hardware do dispositivo (magnetômetro, giroscópio e acelerômetro) é livre e não consome créditos.
+              </li>
+              <li>
+                <strong>Procedimento Transacional:</strong> Ao iniciar uma consulta avulsa fora de sessão, 5 créditos são primeiramente reservados (`reserved`). Se a análise for processada com êxito pelo modelo de IA, os 5 créditos são debitados em definitivo (`spent`).
               </li>
               <li>
                 <strong>Garantia de Estorno Automático por Falha Técnica:</strong> Se ocorrer falha técnica no processamento, indisponibilidade temporária de rede ou interrupção do servidor antes da emissão do resultado, os 5 créditos reservados são liberados e estornados automaticamente de volta ao saldo disponível do usuário.

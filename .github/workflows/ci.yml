@@ -5,11 +5,16 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  workflow_dispatch:
 
 jobs:
   validate:
     name: Lint, Test & Build Gate
     runs-on: ubuntu-latest
+    env:
+      CI: true
+      NODE_ENV: test
+      FIREBASE_PROJECT_ID: froc-sobrenatural
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -20,8 +25,8 @@ jobs:
           node-version: 22
           cache: 'npm'
 
-      - name: Install dependencies cleanly
-        run: npm ci
+      - name: Install dependencies
+        run: npm ci || npm install
 
       - name: Typecheck / Lint
         run: npm run lint

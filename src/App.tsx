@@ -441,7 +441,8 @@ export default function App() {
     const now = Date.now();
     const relativeTimeSec = Math.max(0, (now - currentSession.startTime) / 1000);
     const formattedTime = new Date(now).toLocaleTimeString();
-    const evidenceId = `ev_${now}_${Math.random().toString(36).slice(2, 6)}`;
+    const secSuffix = typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID().slice(0, 8) : Date.now().toString(36);
+    const evidenceId = `ev_${now}_${secSuffix}`;
 
     // Prepare audio sample: use passed blob or record a 2.5s slice for forensic analysis
     let audioBlobToSave = candidateBlob;
@@ -471,7 +472,8 @@ export default function App() {
 
     // Send to /api/analyze with strict forensic guidelines and persistent request id for idempotency
     let analysisResult: any = null;
-    const persistentRequestId = `req_${now}_${Math.random().toString(36).substring(2, 7)}`;
+    const reqSuffix = typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID().slice(0, 8) : Date.now().toString(36);
+    const persistentRequestId = `req_${now}_${reqSuffix}`;
 
     try {
       const token = await getIdToken();

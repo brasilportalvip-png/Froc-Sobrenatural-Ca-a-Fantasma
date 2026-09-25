@@ -330,10 +330,23 @@ export interface ToolSession {
   costCredits: number;
   autoRenew: boolean;
   renewalCount: number;
+  autoRenewCount?: number;
+  maxAutoRenewals?: number;
   lastRenewedAt?: number;
   createdAt: number;
   endedAt?: number;
   requestId: string;
+}
+
+export interface ToolSessionLock {
+  uid: string;
+  toolId: PremiumToolId;
+  activeSessionId: string;
+  expiresAt: number;
+  status: ToolSessionStatus;
+  autoRenewCount: number;
+  maxAutoRenewals: number;
+  updatedAt: number;
 }
 
 // ----------------------------------------------------

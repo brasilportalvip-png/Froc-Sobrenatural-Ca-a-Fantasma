@@ -63,6 +63,8 @@ const DEFAULT_PRICING: Record<PremiumToolId, ToolPricingConfig> = {
   },
 };
 
+export const MAX_AUTO_RENEWALS = 5;
+
 export const ToolSessionProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const { user, getIdToken, refreshWallet } = useAuth();
   const [pricing, setPricing] = useState<Record<PremiumToolId, ToolPricingConfig>>(DEFAULT_PRICING);
@@ -73,11 +75,65 @@ export const ToolSessionProvider: React.FC<{ children: React.ReactNode }> = ({ c
   const [isStarting, setIsStarting] = useState<Record<string, boolean>>({});
   const [isRenewing, setIsRenewing] = useState<Record<string, boolean>>({});
 
+  // Unique tab identifier for multi-tab coordination
+  const tabIdRef = useRef<string>(
+    typeof crypto !== 'undefined' && crypto.randomUUID
+      ? `tab_${crypto.randomUUID()}`
+      : `tab_${Date.now()}`
+  );
+
+  // BroadcastChannel for cross-tab session synchronization and leader coordination
+  const channelRef = useRef<BroadcastChannel | null>(null);
+  const remoteRenewInProgressRef = useRef<Record<string, { tabId: string; timestamp: number }>>({});
+
   // Use refs to avoid stale closures in tick interval
   const sessionsRef = useRef(sessions);
   sessionsRef.current = sessions;
   const isRenewingRef = useRef(isRenewing);
   isRenewingRef.current = isRenewing;
+
+  // Initialize BroadcastChannel
+  useEffect(() => {
+    if (typeof window === 'undefined' || typeof BroadcastChannel === 'undefined') return;
+
+    const channel = new BroadcastChannel('froc_tool_sessions');
+    channelRef.current = channel;
+
+    channel.onmessage = (event) => {
+      const msg = event.data;
+      if (!msg || typeof msg !== 'object') return;
+
+      if (msg.type === 'SESSION_STARTED' && msg.toolId && msg.session) {
+        const s: ToolSession = msg.session;
+        setSessions((prev) => ({ ...prev, [msg.toolId]: s }));
+        const secs = Math.max(0, Math.ceil((s.expiresAt - Date.now()) / 1000));
+        setRemainingSeconds((prev) => ({ ...prev, [msg.toolId]: secs }));
+        refreshWallet().catch(() => {});
+      } else if (msg.type === 'SESSION_RENEWED' && msg.toolId && msg.session) {
+        const s: ToolSession = msg.session;
+        setSessions((prev) => ({ ...prev, [msg.toolId]: s }));
+        const secs = Math.max(0, Math.ceil((s.expiresAt - Date.now()) / 1000));
+        setRemainingSeconds((prev) => ({ ...prev, [msg.toolId]: secs }));
+        delete remoteRenewInProgressRef.current[msg.toolId];
+        setIsRenewing((prev) => ({ ...prev, [msg.toolId]: false }));
+        refreshWallet().catch(() => {});
+      } else if (msg.type === 'SESSION_ENDED' && msg.toolId) {
+        setSessions((prev) => ({ ...prev, [msg.toolId]: null }));
+        setRemainingSeconds((prev) => ({ ...prev, [msg.toolId]: 0 }));
+      } else if (msg.type === 'RENEW_IN_PROGRESS' && msg.toolId && msg.tabId !== tabIdRef.current) {
+        remoteRenewInProgressRef.current[msg.toolId] = {
+          tabId: msg.tabId,
+          timestamp: msg.timestamp || Date.now(),
+        };
+        setIsRenewing((prev) => ({ ...prev, [msg.toolId]: true }));
+      }
+    };
+
+    return () => {
+      channel.close();
+      channelRef.current = null;
+    };
+  }, [refreshWallet]);
 
   // Carregar precificação autoritativa do backend
   useEffect(() => {
@@ -159,10 +215,30 @@ export const ToolSessionProvider: React.FC<{ children: React.ReactNode }> = ({ c
         return { success: false, error: 'Nenhuma sessão encontrada para renovar.' };
       }
 
+      // Proteção de limite máximo de renovações automáticas (5 renovações consecutivas)
+      if (
+        currentSession.autoRenew &&
+        typeof currentSession.autoRenewCount === 'number' &&
+        currentSession.autoRenewCount >= MAX_AUTO_RENEWALS
+      ) {
+        setSessions((prev) => ({
+          ...prev,
+          [toolId]: prev[toolId] ? { ...prev[toolId]!, autoRenew: false, status: 'expired' } : null,
+        }));
+        return {
+          success: false,
+          error: `Limite de auto-renovação de ${MAX_AUTO_RENEWALS} ciclos atingido para sua segurança.`,
+        };
+      }
+
       setIsRenewing((prev) => ({ ...prev, [toolId]: true }));
       try {
         const token = await getIdToken();
-        const requestId = `renew_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+        const secSuffix =
+          typeof crypto !== 'undefined' && crypto.randomUUID
+            ? crypto.randomUUID().slice(0, 8)
+            : Date.now().toString(36);
+        const requestId = `renew_${Date.now()}_${secSuffix}`;
         const resp = await fetch('/api/tools/session/renew', {
           method: 'POST',
           headers: {
@@ -182,6 +258,15 @@ export const ToolSessionProvider: React.FC<{ children: React.ReactNode }> = ({ c
           setSessions((prev) => ({ ...prev, [toolId]: updatedSession }));
           const secs = Math.max(0, Math.ceil((updatedSession.expiresAt - Date.now()) / 1000));
           setRemainingSeconds((prev) => ({ ...prev, [toolId]: secs }));
+
+          // Sincronizar via BroadcastChannel com outras abas abertas
+          channelRef.current?.postMessage({
+            type: 'SESSION_RENEWED',
+            toolId,
+            session: updatedSession,
+          });
+
+          delete remoteRenewInProgressRef.current[toolId];
           await refreshWallet();
           return { success: true };
         } else {
@@ -207,7 +292,11 @@ export const ToolSessionProvider: React.FC<{ children: React.ReactNode }> = ({ c
       setIsStarting((prev) => ({ ...prev, [toolId]: true }));
       try {
         const token = await getIdToken();
-        const requestId = `tool_sess_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+        const secSuffix =
+          typeof crypto !== 'undefined' && crypto.randomUUID
+            ? crypto.randomUUID().slice(0, 8)
+            : Date.now().toString(36);
+        const requestId = `tool_sess_${Date.now()}_${secSuffix}`;
         const resp = await fetch('/api/tools/session/start', {
           method: 'POST',
           headers: {
@@ -228,6 +317,14 @@ export const ToolSessionProvider: React.FC<{ children: React.ReactNode }> = ({ c
           setSessions((prev) => ({ ...prev, [toolId]: newSession }));
           const secs = Math.max(0, Math.ceil((newSession.expiresAt - Date.now()) / 1000));
           setRemainingSeconds((prev) => ({ ...prev, [toolId]: secs }));
+
+          // Sincronizar via BroadcastChannel com outras abas
+          channelRef.current?.postMessage({
+            type: 'SESSION_STARTED',
+            toolId,
+            session: newSession,
+          });
+
           await refreshWallet();
           return { success: true };
         } else {
@@ -288,6 +385,11 @@ export const ToolSessionProvider: React.FC<{ children: React.ReactNode }> = ({ c
         setSessions((prev) => ({ ...prev, [toolId]: null }));
         setRemainingSeconds((prev) => ({ ...prev, [toolId]: 0 }));
 
+        channelRef.current?.postMessage({
+          type: 'SESSION_ENDED',
+          toolId,
+        });
+
         await fetch('/api/tools/session/end', {
           method: 'POST',
           headers: {
@@ -305,7 +407,7 @@ export const ToolSessionProvider: React.FC<{ children: React.ReactNode }> = ({ c
     [getIdToken]
   );
 
-  // Tick timer a cada segundo e controle de expiração / auto-renovação
+  // Tick timer a cada segundo e controle de expiração / auto-renovação com coordenação multi-aba
   useEffect(() => {
     const timer = setInterval(() => {
       const currentSessions = sessionsRef.current;
@@ -323,7 +425,22 @@ export const ToolSessionProvider: React.FC<{ children: React.ReactNode }> = ({ c
         // Se chegou ao fim do tempo de 4 minutos (0 segundos restantes)
         if (leftMs <= 0 && !isRenewingRef.current[toolId]) {
           if (session.autoRenew) {
-            // Auto-renovação autorizada pelo usuário
+            // Coordenação multi-aba: verificar se outra aba já iniciou renovação nos últimos 5 segundos
+            const remoteLock = remoteRenewInProgressRef.current[toolId];
+            if (remoteLock && now - remoteLock.timestamp < 5000) {
+              // Outra aba já assumiu a liderança na renovação
+              return;
+            }
+
+            // Anunciar intenção de renovação às demais abas
+            channelRef.current?.postMessage({
+              type: 'RENEW_IN_PROGRESS',
+              toolId,
+              tabId: tabIdRef.current,
+              timestamp: now,
+            });
+
+            // Executar auto-renovação nesta aba
             renewSession(toolId);
           } else {
             // Expirou sem auto-renovação: marcar localmente como expirada

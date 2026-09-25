@@ -40,6 +40,7 @@ export async function startToolSession(
 
   const walletRef = adminDb.collection('wallets').doc(uid);
   const toolSessionRef = adminDb.collection('toolSessions').doc(requestId);
+  const lockRef = adminDb.collection('toolSessionLocks').doc(`${uid}_${toolId}`);
   const ledgerRef = walletRef.collection('ledger').doc();
 
   return await adminDb.runTransaction(async (t: any) => {
@@ -59,31 +60,26 @@ export async function startToolSession(
       };
     }
 
-    // 2. Verificar se já existe uma sessão ativa e não expirada para esta ferramenta
-    // Consulta por UID e toolId
-    const activeSnaps = await t.get(
-      adminDb.collection('toolSessions')
-        .where('uid', '==', uid)
-        .where('toolId', '==', toolId)
-        .where('status', '==', 'active')
-        .limit(5)
-    );
-
     const now = Date.now();
-    for (const doc of activeSnaps.docs) {
-      const s = doc.data() as ToolSession;
-      if (s.expiresAt > now) {
-        // Já existe uma sessão em andamento válida! Retorna sem cobrança duplicada
-        const wSnap = await t.get(walletRef);
-        const wData = wSnap.data() as UserWallet;
-        return {
-          success: true,
-          session: s,
-          balanceAfter: wData?.balance ?? 0,
-        };
-      } else {
-        // Sessão anterior expirada, marcar como expirada
-        t.update(doc.ref, { status: 'expired' });
+
+    // 2. Lock determinístico por uid + toolId (O(1) sem necessidade de queries dinâmicas na transação)
+    const lockSnap = await t.get(lockRef);
+    if (lockSnap.exists) {
+      const lockData = lockSnap.data();
+      if (lockData.status === 'active' && lockData.expiresAt > now && lockData.activeSessionId) {
+        const activeDocSnap = await t.get(adminDb.collection('toolSessions').doc(lockData.activeSessionId));
+        if (activeDocSnap.exists) {
+          const s = activeDocSnap.data() as ToolSession;
+          if (s.status === 'active' && s.expiresAt > now) {
+            const wSnap = await t.get(walletRef);
+            const wData = wSnap.data() as UserWallet;
+            return {
+              success: true,
+              session: s,
+              balanceAfter: wData?.balance ?? 0,
+            };
+          }
+        }
       }
     }
 
@@ -141,6 +137,19 @@ export async function startToolSession(
     };
 
     t.set(toolSessionRef, newSession);
+
+    // Atualizar lock determinístico atômico por UID + ToolId
+    const lockData: any = {
+      uid,
+      toolId,
+      activeSessionId: toolSessionRef.id,
+      expiresAt: now + durationMs,
+      status: 'active',
+      autoRenewCount: 0,
+      maxAutoRenewals: 5,
+      updatedAt: now,
+    };
+    t.set(lockRef, lockData, { merge: true });
 
     // 6. Registro no Ledger de auditoria
     const ledgerEntry: LedgerEntry = {
@@ -219,21 +228,48 @@ export async function renewToolSession(
       updatedAt: now,
     });
 
+    // Verificar limite máximo de renovações automáticas (proteção contra esgotamento involuntário)
+    const currentAutoCount = session.autoRenewCount || 0;
+    const maxAuto = session.maxAutoRenewals || 5;
+    if (session.autoRenew && currentAutoCount >= maxAuto) {
+      throw new Error('MAX_AUTORENEWALS_REACHED');
+    }
+
     // Se a sessão ainda não tinha expirado completamente, estender a partir de expiresAt
     // Se já havia expirado, iniciar novo ciclo a partir de now
     const baseTime = session.expiresAt > now ? session.expiresAt : now;
     const newExpiresAt = baseTime + durationMs;
     const newRenewalCount = (session.renewalCount || 0) + 1;
+    const newAutoRenewCount = session.autoRenew ? currentAutoCount + 1 : currentAutoCount;
+    const shouldDisableAuto = session.autoRenew && newAutoRenewCount >= maxAuto;
 
     const updatedFields: Partial<ToolSession> & { lastRenewRequestId: string } = {
       expiresAt: newExpiresAt,
       renewalCount: newRenewalCount,
+      autoRenewCount: newAutoRenewCount,
+      autoRenew: shouldDisableAuto ? false : session.autoRenew,
       lastRenewedAt: now,
       status: 'active',
       lastRenewRequestId: requestId,
     };
 
     t.update(toolSessionRef, updatedFields);
+
+    const lockRef = adminDb.collection('toolSessionLocks').doc(`${uid}_${session.toolId}`);
+    t.set(
+      lockRef,
+      {
+        uid,
+        toolId: session.toolId,
+        activeSessionId: toolSessionId,
+        expiresAt: newExpiresAt,
+        status: 'active',
+        autoRenewCount: newAutoRenewCount,
+        maxAutoRenewals: maxAuto,
+        updatedAt: now,
+      },
+      { merge: true }
+    );
 
     const updatedSession: ToolSession = {
       ...session,
@@ -298,6 +334,9 @@ export async function endToolSession(
     endedAt: now,
   });
 
+  const lockRef = adminDb.collection('toolSessionLocks').doc(`${uid}_${session.toolId}`);
+  await lockRef.set({ status: 'ended', updatedAt: now }, { merge: true }).catch(() => {});
+
   return {
     ...session,
     status: 'ended',
@@ -310,6 +349,24 @@ export async function getActiveToolSession(
   toolId: PremiumToolId
 ): Promise<ToolSession | null> {
   const now = Date.now();
+
+  // 1. Tentar leitura direta via Lock determinístico (O(1))
+  const lockRef = adminDb.collection('toolSessionLocks').doc(`${uid}_${toolId}`);
+  const lockSnap = await lockRef.get().catch(() => null);
+  if (lockSnap?.exists) {
+    const lockData = lockSnap.data();
+    if (lockData?.status === 'active' && lockData?.expiresAt > now && lockData?.activeSessionId) {
+      const activeDocSnap = await adminDb.collection('toolSessions').doc(lockData.activeSessionId).get().catch(() => null);
+      if (activeDocSnap?.exists) {
+        const session = activeDocSnap.data() as ToolSession;
+        if (session.status === 'active' && session.expiresAt > now) {
+          return session;
+        }
+      }
+    }
+  }
+
+  // 2. Fallback de consulta
   const snaps = await adminDb.collection('toolSessions')
     .where('uid', '==', uid)
     .where('toolId', '==', toolId)
