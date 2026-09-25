@@ -156,7 +156,7 @@ export interface UserWallet {
 export interface LedgerEntry {
   id: string;
   uid: string;
-  type: 'free_grant' | 'purchase' | 'consultation_reserve' | 'consultation_commit' | 'consultation_release' | 'refund' | 'admin_adjustment';
+  type: 'free_grant' | 'purchase' | 'consultation_reserve' | 'consultation_commit' | 'consultation_release' | 'refund' | 'admin_adjustment' | 'tool_session' | 'tool_session_renewal';
   amount: number; // Positivo ou negativo (ex: +25, -5, +5)
   balanceAfter: number;
   description: string;
@@ -230,6 +230,8 @@ export interface UserProfile {
   displayName: string | null;
   displayNameLower?: string | null;
   emailLower?: string | null;
+  displayNameNormalized?: string | null;
+  emailNormalized?: string | null;
   photoURL: string | null;
   createdAt: number;
   updatedAt: number;
@@ -244,10 +246,48 @@ export interface ConsultationTransaction {
   uid: string;
   creditsReserved: number;
   creditsCommitted: number;
-  status: 'created' | 'reserved' | 'processing' | 'completed' | 'failed_released';
+  status: 'created' | 'reserved' | 'processing' | 'completed' | 'failed_released' | 'expired_released';
   modelUsed?: string;
   executionTimeMs?: number;
   failoverHistory?: string[];
   createdAt: number;
+  reservedAt?: number;
+  expiresAt?: number;
+  processingStartedAt?: number;
   completedAt?: number;
+  releasedAt?: number;
+}
+
+// ----------------------------------------------------
+// Parte 3: Sistema Central de Sessões Temporizadas por Ferramenta
+// ----------------------------------------------------
+
+export type PremiumToolId = 'communication' | 'vision' | 'ouija' | 'blindTest' | 'evidenceAnalysis';
+
+export interface ToolPricingConfig {
+  toolId: PremiumToolId;
+  costCredits: number;
+  durationSeconds: number;
+  name: string;
+  description: string;
+  category: 'audio' | 'camera' | 'sensor_board' | 'protocol' | 'chain';
+}
+
+export type ToolSessionStatus = 'created' | 'reserved' | 'active' | 'expired' | 'renewing' | 'ended' | 'failed_released';
+
+export interface ToolSession {
+  toolSessionId: string;
+  uid: string;
+  toolId: PremiumToolId;
+  status: ToolSessionStatus;
+  startedAt: number;
+  expiresAt: number;
+  durationSeconds: number;
+  costCredits: number;
+  autoRenew: boolean;
+  renewalCount: number;
+  lastRenewedAt?: number;
+  createdAt: number;
+  endedAt?: number;
+  requestId: string;
 }

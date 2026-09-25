@@ -4,7 +4,7 @@ import crypto from 'crypto';
 /** Shared per-user limit across serverless instances. A rejected request never calls the AI or checkout. */
 export async function enforceUserRateLimit(
   uid: string,
-  operation: 'analyze' | 'chat' | 'order',
+  operation: 'analyze' | 'chat' | 'order' | 'tool_session_start' | 'tool_session_renew',
   maximum: number,
   periodMs = 60_000,
 ): Promise<boolean> {

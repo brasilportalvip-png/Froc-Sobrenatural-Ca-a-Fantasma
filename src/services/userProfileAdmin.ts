@@ -2,6 +2,19 @@ import { adminDb } from './firebaseAdmin';
 import { UserProfile } from '../types';
 
 /**
+ * Normaliza strings para busca insensível a acentos (diacríticos) e caixa alta/baixa.
+ * Exemplo: "João" -> "joao"
+ */
+export function normalizeSearchTerm(str?: string | null): string {
+  if (!str) return '';
+  return str
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .trim();
+}
+
+/**
  * Garante e sincroniza o documento users/{uid} no Firestore Admin SDK.
  * 
  * Invariantes:
@@ -37,6 +50,8 @@ export async function ensureUserProfileServer(userRecord: {
       displayName,
       displayNameLower: displayName ? displayName.toLowerCase().trim() : null,
       emailLower: email ? email.toLowerCase().trim() : null,
+      displayNameNormalized: displayName ? normalizeSearchTerm(displayName) : null,
+      emailNormalized: email ? normalizeSearchTerm(email) : null,
       photoURL: userRecord.picture || null,
       createdAt: now,
       updatedAt: now,
@@ -58,8 +73,12 @@ export async function ensureUserProfileServer(userRecord: {
     if (userRecord.name && userRecord.name !== existing.displayName) {
       updates.displayName = userRecord.name;
       updates.displayNameLower = userRecord.name.toLowerCase().trim();
-    } else if (!existing.displayNameLower && existing.displayName) {
-      updates.displayNameLower = existing.displayName.toLowerCase().trim();
+      updates.displayNameNormalized = normalizeSearchTerm(userRecord.name);
+    } else if (!existing.displayNameNormalized && existing.displayName) {
+      updates.displayNameNormalized = normalizeSearchTerm(existing.displayName);
+      if (!existing.displayNameLower) {
+        updates.displayNameLower = existing.displayName.toLowerCase().trim();
+      }
     }
 
     if (userRecord.picture && userRecord.picture !== existing.photoURL) {
@@ -68,8 +87,12 @@ export async function ensureUserProfileServer(userRecord: {
     if (userRecord.email && userRecord.email !== existing.email) {
       updates.email = userRecord.email;
       updates.emailLower = userRecord.email.toLowerCase().trim();
-    } else if (!existing.emailLower && existing.email) {
-      updates.emailLower = existing.email.toLowerCase().trim();
+      updates.emailNormalized = normalizeSearchTerm(userRecord.email);
+    } else if (!existing.emailNormalized && existing.email) {
+      updates.emailNormalized = normalizeSearchTerm(existing.email);
+      if (!existing.emailLower) {
+        updates.emailLower = existing.email.toLowerCase().trim();
+      }
     }
 
     await userRef.update(updates);

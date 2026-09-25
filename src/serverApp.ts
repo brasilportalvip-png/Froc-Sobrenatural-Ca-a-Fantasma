@@ -22,6 +22,16 @@ import {
 import { executeGeminiWithFallback } from './services/aiOrchestrator';
 import { enforceUserRateLimit } from './services/rateLimit';
 import { ensureUserProfileServer, getUserProfileServer } from './services/userProfileAdmin';
+import { getAllToolPricing, getToolPricing, isValidPremiumTool } from './services/toolPricing';
+import {
+  startToolSession,
+  renewToolSession,
+  toggleAutoRenew,
+  endToolSession,
+  getActiveToolSession,
+  validateToolAccess,
+} from './services/toolSessionEngine';
+import { PremiumToolId } from './types';
 
 dotenv.config();
 
@@ -150,11 +160,13 @@ app.get('/api/status', (_req: Request, res: Response) => {
       mercadoPago: mpReady ? 'operational' : 'unconfigured',
     },
     features: {
-      audioAnalysis: geminiReady,
+      audioAnalysis: true, // Disponível via Gemini AI ou Motor Espectral Local (DSP)
+      localDspEngine: true,
       investigationChat: geminiReady,
       blindTestVerification: geminiReady,
       evidenceLogging: true,
       walletAndCredits: firebaseReady,
+      toolTimedSessions: firebaseReady,
       mercadoPagoCheckoutPro: mpReady,
     },
   });
@@ -270,7 +282,159 @@ app.post('/api/webhooks/mercadopago', async (req: Request, res: Response) => {
   }
 });
 
-// 7. Audio & Signal Analysis endpoint (AUTENTICAÇÃO OBRIGATÓRIA, reserva atômica de 5 créditos e validação de schema)
+// =========================================================================
+// 7. SISTEMA CENTRAL DE SESSÕES TEMPORIZADAS POR FERRAMENTA (/api/tools/*)
+// =========================================================================
+
+// Catálogo autoritativo de preços e durações das ferramentas (5 créditos = 4 min)
+app.get('/api/tools/pricing', (_req: Request, res: Response) => {
+  res.json({
+    pricing: getAllToolPricing(),
+    standardRule: '5 créditos = 4 minutos de utilização contínua',
+  });
+});
+
+// Obter sessão ativa do usuário para uma ferramenta específica
+app.get('/api/tools/session/active', authenticateFirebaseUser, async (req: any, res: Response) => {
+  try {
+    const uid = req.user.uid;
+    const toolId = req.query.toolId as PremiumToolId;
+    if (!isValidPremiumTool(toolId)) {
+      return res.status(400).json({ error: 'Identificador de ferramenta inválido.' });
+    }
+
+    const session = await getActiveToolSession(uid, toolId);
+    res.json({
+      active: !!session,
+      session: session || null,
+    });
+  } catch (err: any) {
+    return handleDbError(err, res, 'Erro ao verificar sessão ativa da ferramenta.');
+  }
+});
+
+// Iniciar sessão de ferramenta premium (Reserva/Débito atômico de 5 créditos por 4 min)
+app.post('/api/tools/session/start', authenticateFirebaseUser, async (req: any, res: Response) => {
+  try {
+    const uid = req.user.uid;
+    const { toolId, autoRenew } = req.body || {};
+    const requestId = req.headers['x-request-id']?.toString() || req.body?.requestId || crypto.randomUUID();
+
+    if (!isValidPremiumTool(toolId)) {
+      return res.status(400).json({ error: 'Identificador de ferramenta inválido.' });
+    }
+
+    if (!await enforceUserRateLimit(uid, 'tool_session_start', 10)) {
+      return res.status(429).json({ error: 'Aguarde antes de iniciar uma nova sessão.' });
+    }
+
+    const result = await startToolSession(uid, toolId, !!autoRenew, requestId);
+    res.json({
+      success: true,
+      session: result.session,
+      balance: result.balanceAfter,
+    });
+  } catch (err: any) {
+    if (err.message === 'INSUFFICIENT_BALANCE') {
+      return res.status(402).json({
+        error: 'Saldo insuficiente. Esta ferramenta requer 5 créditos disponíveis para 4 minutos de sessão.',
+        code: 'INSUFFICIENT_CREDITS',
+      });
+    }
+    if (err.message === 'REQUEST_UID_MISMATCH') {
+      return res.status(403).json({ error: 'Chave de requisição inconsistente.' });
+    }
+    console.error('[Tools Session Start] Erro:', err);
+    return handleDbError(err, res, 'Erro ao iniciar sessão da ferramenta.');
+  }
+});
+
+// Renovar sessão de ferramenta premium (+4 min por 5 créditos)
+app.post('/api/tools/session/renew', authenticateFirebaseUser, async (req: any, res: Response) => {
+  try {
+    const uid = req.user.uid;
+    const { toolSessionId } = req.body || {};
+    const requestId = req.headers['x-request-id']?.toString() || req.body?.requestId || crypto.randomUUID();
+
+    if (!toolSessionId || typeof toolSessionId !== 'string') {
+      return res.status(400).json({ error: 'toolSessionId é obrigatório.' });
+    }
+
+    if (!await enforceUserRateLimit(uid, 'tool_session_renew', 15)) {
+      return res.status(429).json({ error: 'Aguarde antes de renovar novamente.' });
+    }
+
+    const result = await renewToolSession(uid, toolSessionId, requestId);
+    res.json({
+      success: true,
+      session: result.session,
+      balance: result.balanceAfter,
+    });
+  } catch (err: any) {
+    if (err.message === 'INSUFFICIENT_BALANCE') {
+      return res.status(402).json({
+        error: 'Saldo insuficiente para renovação. Adquira créditos para continuar utilizando a ferramenta.',
+        code: 'INSUFFICIENT_CREDITS',
+      });
+    }
+    if (err.message === 'SESSION_NOT_FOUND') {
+      return res.status(404).json({ error: 'Sessão não encontrada.' });
+    }
+    if (err.message === 'SESSION_UID_MISMATCH') {
+      return res.status(403).json({ error: 'Acesso negado à sessão.' });
+    }
+    console.error('[Tools Session Renew] Erro:', err);
+    return handleDbError(err, res, 'Erro ao renovar sessão da ferramenta.');
+  }
+});
+
+// Alternar configuração de auto-renovação
+app.post('/api/tools/session/toggle-autorenew', authenticateFirebaseUser, async (req: any, res: Response) => {
+  try {
+    const uid = req.user.uid;
+    const { toolSessionId, autoRenew } = req.body || {};
+
+    if (!toolSessionId || typeof toolSessionId !== 'string') {
+      return res.status(400).json({ error: 'toolSessionId é obrigatório.' });
+    }
+
+    const updated = await toggleAutoRenew(uid, toolSessionId, !!autoRenew);
+    res.json({
+      success: true,
+      session: updated,
+    });
+  } catch (err: any) {
+    if (err.message === 'SESSION_NOT_FOUND') return res.status(404).json({ error: 'Sessão não encontrada.' });
+    if (err.message === 'SESSION_UID_MISMATCH') return res.status(403).json({ error: 'Acesso negado à sessão.' });
+    return handleDbError(err, res, 'Erro ao alternar auto-renovação.');
+  }
+});
+
+// Encerrar sessão ativa
+app.post('/api/tools/session/end', authenticateFirebaseUser, async (req: any, res: Response) => {
+  try {
+    const uid = req.user.uid;
+    const { toolSessionId } = req.body || {};
+
+    if (!toolSessionId || typeof toolSessionId !== 'string') {
+      return res.status(400).json({ error: 'toolSessionId é obrigatório.' });
+    }
+
+    const updated = await endToolSession(uid, toolSessionId);
+    res.json({
+      success: true,
+      session: updated,
+    });
+  } catch (err: any) {
+    if (err.message === 'SESSION_NOT_FOUND') return res.status(404).json({ error: 'Sessão não encontrada.' });
+    if (err.message === 'SESSION_UID_MISMATCH') return res.status(403).json({ error: 'Acesso negado à sessão.' });
+    return handleDbError(err, res, 'Erro ao encerrar sessão.');
+  }
+});
+
+// =========================================================================
+// 8. Audio & Signal Analysis endpoint (Integração com Sessão e Fallback DSP Local)
+// =========================================================================
 app.post('/api/analyze', authenticateFirebaseUser, async (req: any, res: Response) => {
   const uid = req.user.uid;
   const requestId = req.headers['x-request-id']?.toString() || crypto.randomUUID();
@@ -278,7 +442,7 @@ app.post('/api/analyze', authenticateFirebaseUser, async (req: any, res: Respons
     return res.status(400).json({ error: 'ID da consulta inválido.' });
   }
 
-  const { question, audioBase64, mimeType, sensorContext, audioMetrics } = req.body || {};
+  const { question, audioBase64, mimeType, sensorContext, audioMetrics, toolSessionId } = req.body || {};
 
   // Validação de entrada
   if (!question || typeof question !== 'string' || question.trim().length === 0) {
@@ -287,7 +451,6 @@ app.post('/api/analyze', authenticateFirebaseUser, async (req: any, res: Respons
   if (question.length > 500) {
     return res.status(400).json({ error: 'Pergunta excede limite de 500 caracteres.' });
   }
-  if (!ai) return res.status(503).json({ error: 'Análise por IA indisponível. Nenhum crédito foi reservado.' });
 
   // Validação de áudio se fornecido
   if (audioBase64 !== undefined && (typeof audioBase64 !== 'string' || !/^data:audio\/(webm|ogg|mp4|mpeg|wav)(?:;codecs=[a-z0-9-]+)?;base64,[A-Za-z0-9+/=]+$/i.test(audioBase64))) {
@@ -299,93 +462,110 @@ app.post('/api/analyze', authenticateFirebaseUser, async (req: any, res: Respons
   }
 
   try {
-    if (!await enforceUserRateLimit(uid, 'analyze', 12)) return res.status(429).json({ error: 'Limite temporário de consultas atingido.' });
+    if (!await enforceUserRateLimit(uid, 'analyze', 15)) return res.status(429).json({ error: 'Limite temporário de consultas atingido.' });
   } catch {
-    return res.status(503).json({ error: 'Controle de uso indisponível. Nenhum crédito foi reservado.' });
+    return res.status(503).json({ error: 'Controle de uso indisponível.' });
+  }
+
+  // Verificar se o usuário está dentro de uma Sessão Temporizada Paga ativa da ferramenta 'communication'
+  const clientSessionId = req.headers['x-tool-session-id']?.toString() || toolSessionId;
+  let inPaidToolSession = false;
+  try {
+    const access = await validateToolAccess(uid, 'communication', clientSessionId);
+    if (access.allowed) {
+      inPaidToolSession = true;
+    }
+  } catch (sessErr) {
+    console.warn('[Analyze] Aviso ao validar sessão da ferramenta:', sessErr);
   }
 
   // Hash da requisição para idempotência estrita
   const payloadHash = crypto.createHash('sha256').update(JSON.stringify({ question: question.trim(), audioBase64, mimeType, sensorContext, audioMetrics })).digest('hex');
 
   let creditReserved = false;
-  try {
-    const reservation = await reserveConsultationCredits(uid, requestId, payloadHash);
-    creditReserved = reservation.success;
 
-    // Se já havia sido completada com a mesma chave (idempotência perfeita)
-    if (reservation.cachedResult) {
-      return res.json(reservation.cachedResult);
+  // Se o usuário NÃO estiver em uma sessão paga ativa, cobrar/reservar os 5 créditos da consulta avulsa
+  if (!inPaidToolSession) {
+    try {
+      const reservation = await reserveConsultationCredits(uid, requestId, payloadHash);
+      creditReserved = reservation.success;
+
+      // Se já havia sido completada com a mesma chave (idempotência perfeita)
+      if (reservation.cachedResult) {
+        return res.json(reservation.cachedResult);
+      }
+    } catch (err: any) {
+      if (err.message === 'INSUFFICIENT_BALANCE') {
+        return res.status(402).json({
+          error: 'Saldo insuficiente. Inicie uma sessão de 4 minutos (5 créditos) ou adquira mais créditos.',
+          code: 'INSUFFICIENT_CREDITS',
+        });
+      }
+      if (err.message === 'CONSULTATION_IN_PROGRESS') {
+        return res.status(409).json({
+          error: 'Esta consulta já está sendo processada no momento.',
+          code: 'IN_PROGRESS',
+        });
+      }
+      if (err.message === 'REQUEST_PAYLOAD_MISMATCH' || err.message === 'REQUEST_UID_MISMATCH') {
+        return res.status(403).json({
+          error: 'Chave de requisição inconsistente ou pertencente a outra operação.',
+        });
+      }
+      console.error('[Analyze] Falha ao reservar créditos:', err);
+      return res.status(500).json({ error: 'Falha no controle transacional de créditos da carteira.' });
     }
-  } catch (err: any) {
-    if (err.message === 'INSUFFICIENT_BALANCE') {
-      return res.status(402).json({
-        error: 'Saldo insuficiente. Esta consulta pericial requer 5 créditos disponíveis.',
-        code: 'INSUFFICIENT_CREDITS',
-      });
-    }
-    if (err.message === 'CONSULTATION_IN_PROGRESS') {
-      return res.status(409).json({
-        error: 'Esta consulta já está sendo processada no momento.',
-        code: 'IN_PROGRESS',
-      });
-    }
-    if (err.message === 'REQUEST_PAYLOAD_MISMATCH' || err.message === 'REQUEST_UID_MISMATCH') {
-      return res.status(403).json({
-        error: 'Chave de requisição inconsistente ou pertencente a outra operação.',
-      });
-    }
-    console.error('[Analyze] Falha ao reservar créditos:', err);
-    return res.status(500).json({ error: 'Falha no controle transacional de créditos da carteira.' });
   }
 
-  try {
-    if (!ai) {
-      // Motor de fallback local com honestidade metodológica absoluta
-      // Se não há áudio captado, JAMAIS afirma que há voz detectada
-      const dbfs = typeof audioMetrics?.dbfs === 'number' ? audioMetrics.dbfs : -60;
-      const peakHz = typeof audioMetrics?.peakFrequencyHz === 'number' ? audioMetrics.peakFrequencyHz : 0;
-      const isVoiceBand = peakHz >= 250 && peakHz <= 3500;
-      const hasSignificantVolume = dbfs > -38;
+  // Se o Gemini não estiver configurado/disponível, executar imediatamente o Motor Espectral Local (Froc DSP v1.0)
+  if (!ai) {
+    const dbfs = typeof audioMetrics?.dbfs === 'number' ? audioMetrics.dbfs : -60;
+    const peakHz = typeof audioMetrics?.peakFrequencyHz === 'number' ? audioMetrics.peakFrequencyHz : 0;
+    const isVoiceBand = peakHz >= 250 && peakHz <= 3500;
+    const hasSignificantVolume = dbfs > -38;
 
-      let candidateTranscription: string | null = null;
-      let conclusion = hasAudioData
-        ? 'Áudio analisado pelo motor espectral local. Nenhuma resposta ou fonema inteligível identificado.'
-        : 'Consulta registrada sem amostra de áudio anexada. Nenhuma emissão acústica examinada.';
-      let confidence = 0.05;
-      const alternativeHypotheses = [
-        'Ruído térmico do transdutor do microfone',
-        'Variação normal do ruído de fundo ambiente',
-        'Ausência de modulação harmônica de fala',
-      ];
+    let candidateTranscription: string | null = null;
+    let conclusion = hasAudioData
+      ? 'Áudio analisado pelo motor espectral local (Froc DSP). Nenhuma resposta ou fonema inteligível identificado.'
+      : 'Consulta registrada sem amostra de áudio anexada. Nenhuma emissão acústica examinada.';
+    let confidence = 0.05;
+    const alternativeHypotheses = [
+      'Ruído térmico do transdutor do microfone',
+      'Variação normal do ruído de fundo ambiente',
+      'Ausência de modulação harmônica de fala',
+    ];
 
-      if (hasAudioData && hasSignificantVolume && isVoiceBand) {
-        conclusion = 'Sinal com energia na faixa vocal (250Hz–3.5kHz), porém sem inteligibilidade para transcrição fonética segura.';
-        confidence = 0.35;
-        alternativeHypotheses.unshift('Voz distante de pessoa no local ou vazamento de áudio acústico externo');
-      }
-
-      const localResult = {
-        candidateTranscription,
-        conclusion,
-        confidence,
-        voiceDetected: hasAudioData && hasSignificantVolume && isVoiceBand,
-        acousticAnalysis: hasAudioData
-          ? `[Medição Real] dBFS: ${dbfs.toFixed(1)} | Frequência de pico: ${peakHz}Hz | Banda de fala: ${isVoiceBand ? 'Sim' : 'Não'}`
-          : 'Nenhum arquivo de áudio enviado para análise espectral.',
-        alternativeHypotheses,
-        possibleName: null,
-        controlQuestionSuggestion: 'Sugestão de pergunta de controle: "Pode repetir com clareza em voz audível?"',
-        provider: 'Motor Espectral Local (Froc DSP v1.0)',
-      };
-
-      if (creditReserved) {
-        await commitConsultationCredits(uid, requestId, 'Motor Espectral Local (Froc DSP v1.0)', 50, localResult);
-      }
-
-      return res.json(localResult);
+    if (hasAudioData && hasSignificantVolume && isVoiceBand) {
+      conclusion = 'Sinal com energia na faixa vocal (250Hz–3.5kHz), porém sem inteligibilidade para transcrição fonética segura.';
+      confidence = 0.35;
+      alternativeHypotheses.unshift('Voz distante de pessoa no local ou vazamento acústico externo');
     }
 
-    // Preparar prompt rigoroso para Gemini
+    const localResult = {
+      candidateTranscription,
+      conclusion,
+      confidence,
+      voiceDetected: hasAudioData && hasSignificantVolume && isVoiceBand,
+      acousticAnalysis: hasAudioData
+        ? `[Medição Real DSP] dBFS: ${dbfs.toFixed(1)} | Frequência de pico: ${peakHz}Hz | Banda de fala: ${isVoiceBand ? 'Sim' : 'Não'}`
+        : 'Nenhum arquivo de áudio enviado para análise espectral.',
+      alternativeHypotheses,
+      possibleName: null,
+      controlQuestionSuggestion: 'Sugestão de pergunta de controle: "Pode repetir com clareza em voz audível?"',
+      provider: 'Motor Espectral Local (Froc DSP v1.0)',
+      isLocalOffline: true,
+      inToolSession: inPaidToolSession,
+    };
+
+    if (creditReserved) {
+      await commitConsultationCredits(uid, requestId, 'Motor Espectral Local (Froc DSP v1.0)', 50, localResult);
+    }
+
+    return res.json(localResult);
+  }
+
+  // Executar Gemini com fallback em cascata e timeout realista
+  try {
     const prompt = `
 Você é o analisador pericial da estação "Froc Sobrenatural Caça Fantasma".
 Sua função é avaliar com ceticismo metodológico, análise espectral e física uma amostra de áudio e telemetria.
@@ -434,7 +614,7 @@ FORMATO JSON OBRIGATÓRIO:
         contents: parts,
         config: { responseMimeType: 'application/json' },
       },
-      ['gemini-3.8-flash', 'gemini-3.7-flash', 'gemini-3.6-flash']
+      { operationType: 'audio_analysis' }
     );
 
     const parsed: any = JSON.parse(cascadeResult.text || '{}');
@@ -463,31 +643,53 @@ FORMATO JSON OBRIGATÓRIO:
       provider: `${cascadeResult.modelUsed} (Análise Forense)`,
       modelUsed: cascadeResult.modelUsed,
       executionTimeMs: cascadeResult.executionTimeMs,
+      inToolSession: inPaidToolSession,
     };
 
-    // Efetivar débito definitivo e salvar resultado para idempotência
+    // Efetivar débito definitivo se houve reserva individual
     if (creditReserved) {
       await commitConsultationCredits(uid, requestId, cascadeResult.modelUsed, cascadeResult.executionTimeMs, finalResponse);
     }
 
     return res.json(finalResponse);
   } catch (err: any) {
-    console.error('Audio analysis error:', err);
+    console.warn('[Analyze] Falha na IA neural, acionando fallback local com estorno:', err?.message);
 
-    // Se houve reserva de créditos e o processamento falhou, estornar/liberar imediatamente os 5 créditos
+    // Se houve reserva individual de créditos e a IA falhou, liberar imediatamente os créditos
     if (creditReserved) {
-      try { await releaseConsultationCredits(uid, requestId, 'Falha técnica'); }
+      try { await releaseConsultationCredits(uid, requestId, err?.message || 'Falha técnica'); }
       catch (releaseError) { console.error('[Analyze] Estorno pendente de conciliação:', releaseError); }
     }
 
-    return res.status(500).json({
+    // Fornecer a avaliação do Motor Espectral Local para que o usuário não fique sem resposta pericial
+    const dbfs = typeof audioMetrics?.dbfs === 'number' ? audioMetrics.dbfs : -60;
+    const peakHz = typeof audioMetrics?.peakFrequencyHz === 'number' ? audioMetrics.peakFrequencyHz : 0;
+    const isVoiceBand = peakHz >= 250 && peakHz <= 3500;
+    const hasSignificantVolume = dbfs > -38;
+
+    return res.status(200).json({
       candidateTranscription: null,
-      voiceDetected: false,
-      confidence: 0,
-      conclusion: 'Falha técnica no processamento pericial. Os créditos da consulta foram integralmente liberados.',
-      acousticAnalysis: 'Erro ao contatar o serviço de análise.',
-      alternativeHypotheses: ['Falha de conexão', 'Tempo de resposta excedido'],
-      error: 'Falha técnica na análise.',
+      voiceDetected: hasAudioData && hasSignificantVolume && isVoiceBand,
+      confidence: hasAudioData && hasSignificantVolume && isVoiceBand ? 0.35 : 0.05,
+      conclusion: hasAudioData && hasSignificantVolume && isVoiceBand
+        ? 'Sinal com energia na faixa vocal (250Hz–3.5kHz), porém sem inteligibilidade para transcrição fonética segura.'
+        : hasAudioData
+        ? 'Áudio analisado pelo motor espectral local (Froc DSP). Nenhuma emissão fonética identificada.'
+        : 'Consulta registrada sem amostra de áudio anexada.',
+      acousticAnalysis: hasAudioData
+        ? `[Medição Real DSP] dBFS: ${dbfs.toFixed(1)} | Frequência de pico: ${peakHz}Hz | Banda de fala: ${isVoiceBand ? 'Sim' : 'Não'}`
+        : 'Nenhum arquivo de áudio enviado para análise espectral.',
+      alternativeHypotheses: [
+        'Ruído térmico do transdutor do microfone',
+        'Variação normal do ruído de fundo ambiente',
+        'Processamento fornecido via Motor Espectral Local após indisponibilidade da IA neural',
+      ],
+      possibleName: null,
+      controlQuestionSuggestion: 'Sugestão de pergunta de controle: "Pode repetir com clareza em voz audível?"',
+      provider: 'Motor Espectral Local (Froc DSP v1.0 - Fallback)',
+      isFallback: true,
+      creditsRefunded: creditReserved,
+      inToolSession: inPaidToolSession,
     });
   }
 });
@@ -554,7 +756,7 @@ REGRAS:
         contents,
         config: { systemInstruction },
       },
-      ['gemini-3.8-flash', 'gemini-3.7-flash', 'gemini-3.6-flash']
+      { operationType: 'chat' }
     );
 
     const result = {

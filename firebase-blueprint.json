@@ -49,6 +49,25 @@
         "timestamp": { "type": "number" }
       },
       "required": ["id", "uid", "type", "amount", "timestamp"]
+    },
+    "toolSessions": {
+      "title": "ToolSession",
+      "description": "Sessões temporizadas de ferramentas premium no Froc",
+      "type": "object",
+      "properties": {
+        "toolSessionId": { "type": "string" },
+        "uid": { "type": "string" },
+        "toolId": { "type": "string" },
+        "status": { "type": "string" },
+        "startedAt": { "type": "number" },
+        "expiresAt": { "type": "number" },
+        "durationSeconds": { "type": "number" },
+        "costCredits": { "type": "number" },
+        "autoRenew": { "type": "boolean" },
+        "renewalCount": { "type": "number" },
+        "createdAt": { "type": "number" }
+      },
+      "required": ["toolSessionId", "uid", "toolId", "status", "startedAt", "expiresAt"]
     }
   },
   "firestore": {
@@ -63,6 +82,10 @@
     "/wallets/{userId}/ledger/{entryId}": {
       "schema": "ledger",
       "description": "Extrato e histórico transacional de cada carteira"
+    },
+    "/toolSessions/{sessionId}": {
+      "schema": "toolSessions",
+      "description": "Sessões temporizadas pagas de ferramentas premium"
     }
   }
 }

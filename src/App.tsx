@@ -31,7 +31,9 @@ import { PrivacyPolicy } from './components/PrivacyPolicy';
 import { TermsOfUse } from './components/TermsOfUse';
 import { NotFoundPage } from './components/NotFoundPage';
 import { AppFooter } from './components/AppFooter';
+import { ToolSessionGate } from './components/ToolSessionGate';
 import { useAuth } from './services/AuthContext';
+import { useToolSession } from './services/ToolSessionContext';
 import {
   Radio,
   Eye,
@@ -53,6 +55,7 @@ import {
 
 export default function App() {
   const { user, profile, wallet, isAdmin, getIdToken, refreshWallet, logoutUser } = useAuth();
+  const { getActiveSessionId } = useToolSession();
   const [activeTab, setActiveTab] = useState<ModuleTab>('communication');
 
   // Modals state
@@ -455,11 +458,15 @@ export default function App() {
 
     try {
       const token = await getIdToken();
+      const activeToolSessionId = getActiveSessionId('communication');
       const headers: Record<string, string> = { 'Content-Type': 'application/json' };
       if (token) {
         headers['Authorization'] = `Bearer ${token}`;
       }
       headers['x-request-id'] = persistentRequestId;
+      if (activeToolSessionId) {
+        headers['x-tool-session-id'] = activeToolSessionId;
+      }
 
       const resp = await fetch('/api/analyze', {
         method: 'POST',
@@ -468,6 +475,7 @@ export default function App() {
           question,
           audioBase64: base64Audio || undefined,
           mimeType,
+          toolSessionId: activeToolSessionId,
           audioMetrics: {
             dbfs: audioMetrics.dbfs,
             peakFrequencyHz: audioMetrics.peakFrequencyHz,
@@ -923,41 +931,59 @@ export default function App() {
       {/* Main Module Content Viewport */}
       <main className="flex-1 max-w-7xl w-full mx-auto p-3 sm:p-4">
         {activeTab === 'communication' && (
-          <CommunicationModule
-            activeSession={activeSession}
-            onStartSession={handleStartSession}
-            onEndSession={handleEndSession}
-            isRecording={isRecordingAudio}
-            onToggleRecording={handleToggleRecording}
-            audioMetrics={audioMetrics}
-            sensorState={sensorState}
-            evidenceList={evidenceList}
-            onAddQuestionEvidence={handleAddQuestionEvidence}
-            onNavigateToEvidence={handleNavigateToEvidence}
-            onUpdateEvidenceDecision={handleUpdateEvidenceDecision}
-            onNavigateTab={(tab) => setActiveTab(tab)}
+          <ToolSessionGate
+            toolId="communication"
             onOpenWallet={() => setIsWalletModalOpen(true)}
             onOpenAuth={() => setIsAuthModalOpen(true)}
-            hasAudioPermission={hasAudioPermission}
-            onRequestMicPermission={requestMicPermission}
-            hasGemini={hasGemini}
-          />
+          >
+            <CommunicationModule
+              activeSession={activeSession}
+              onStartSession={handleStartSession}
+              onEndSession={handleEndSession}
+              isRecording={isRecordingAudio}
+              onToggleRecording={handleToggleRecording}
+              audioMetrics={audioMetrics}
+              sensorState={sensorState}
+              evidenceList={evidenceList}
+              onAddQuestionEvidence={handleAddQuestionEvidence}
+              onNavigateToEvidence={handleNavigateToEvidence}
+              onUpdateEvidenceDecision={handleUpdateEvidenceDecision}
+              onNavigateTab={(tab) => setActiveTab(tab)}
+              onOpenWallet={() => setIsWalletModalOpen(true)}
+              onOpenAuth={() => setIsAuthModalOpen(true)}
+              hasAudioPermission={hasAudioPermission}
+              onRequestMicPermission={requestMicPermission}
+              hasGemini={hasGemini}
+            />
+          </ToolSessionGate>
         )}
 
         {activeTab === 'vision' && (
-          <VisionModule
-            activeSession={activeSession}
-            onSavePhotoEvidence={handleSavePhotoEvidence}
-            evidenceList={evidenceList}
-          />
+          <ToolSessionGate
+            toolId="vision"
+            onOpenWallet={() => setIsWalletModalOpen(true)}
+            onOpenAuth={() => setIsAuthModalOpen(true)}
+          >
+            <VisionModule
+              activeSession={activeSession}
+              onSavePhotoEvidence={handleSavePhotoEvidence}
+              evidenceList={evidenceList}
+            />
+          </ToolSessionGate>
         )}
 
         {activeTab === 'ouija' && (
-          <OuijaModule
-            activeSession={activeSession}
-            onSaveOuijaEvidence={handleSaveOuijaEvidence}
-            evidenceList={evidenceList}
-          />
+          <ToolSessionGate
+            toolId="ouija"
+            onOpenWallet={() => setIsWalletModalOpen(true)}
+            onOpenAuth={() => setIsAuthModalOpen(true)}
+          >
+            <OuijaModule
+              activeSession={activeSession}
+              onSaveOuijaEvidence={handleSaveOuijaEvidence}
+              evidenceList={evidenceList}
+            />
+          </ToolSessionGate>
         )}
 
         {activeTab === 'sensors' && (
@@ -973,23 +999,35 @@ export default function App() {
         )}
 
         {activeTab === 'evidence' && (
-          <EvidenceModule
-            activeSession={activeSession}
-            sessions={sessions}
-            selectedSessionId={selectedSessionId}
-            onSelectSession={(id) => setSelectedSessionId(id)}
-            evidenceList={evidenceList}
-            highlightedEvidenceId={highlightedEvidenceId}
-            onDeleteSession={handleDeleteSession}
-            onAddIndependentReview={handleAddIndependentReview}
-          />
+          <ToolSessionGate
+            toolId="evidenceAnalysis"
+            onOpenWallet={() => setIsWalletModalOpen(true)}
+            onOpenAuth={() => setIsAuthModalOpen(true)}
+          >
+            <EvidenceModule
+              activeSession={activeSession}
+              sessions={sessions}
+              selectedSessionId={selectedSessionId}
+              onSelectSession={(id) => setSelectedSessionId(id)}
+              evidenceList={evidenceList}
+              highlightedEvidenceId={highlightedEvidenceId}
+              onDeleteSession={handleDeleteSession}
+              onAddIndependentReview={handleAddIndependentReview}
+            />
+          </ToolSessionGate>
         )}
 
         {activeTab === 'blindtest' && (
-          <BlindTestModule
-            activeSession={activeSession}
-            onLogEvidence={handleLogEvidence}
-          />
+          <ToolSessionGate
+            toolId="blindTest"
+            onOpenWallet={() => setIsWalletModalOpen(true)}
+            onOpenAuth={() => setIsAuthModalOpen(true)}
+          >
+            <BlindTestModule
+              activeSession={activeSession}
+              onLogEvidence={handleLogEvidence}
+            />
+          </ToolSessionGate>
         )}
 
         {activeTab === 'settings' && (

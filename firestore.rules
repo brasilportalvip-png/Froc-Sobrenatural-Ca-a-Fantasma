@@ -50,6 +50,12 @@ service cloud.firestore {
       allow write: if false;
     }
 
+    // Tool Sessions: User can read their own tool sessions. Write handled exclusively by backend (Admin SDK).
+    match /toolSessions/{sessionId} {
+      allow read: if isAuthenticated() && resource.data.uid == request.auth.uid;
+      allow write: if false;
+    }
+
     // Evidence & Media references stored in Firestore
     match /evidence/{evidenceId} {
       allow read: if isAuthenticated() && resource.data.uid == request.auth.uid;
