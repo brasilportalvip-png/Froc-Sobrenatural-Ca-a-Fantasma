@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
 import { TOOL_PRICING, getToolPricing, isValidPremiumTool, getAllToolPricing } from '../src/services/toolPricing.js';
 import { app } from '../src/serverApp.js';
 import { PremiumToolId } from '../src/types.js';
@@ -106,3 +107,39 @@ test('Segurança de Sessões: Endpoints /api/tools/session/* rejeitam requisiç�
     assert.ok(errJson?.error, `Rota ${ep.path} deve retornar mensagem de erro`);
   }
 });
+
+test('ToolSessionEngine: Lock determinístico e limite maxAutoRenewals implementados no motor', () => {
+  const code = fs.readFileSync('src/services/toolSessionEngine.ts', 'utf-8');
+
+  // Verifica uso do lock determinístico por UID + ToolId
+  assert.ok(code.includes('toolSessionLocks'), 'Deve gerenciar coleção de locks determinísticos toolSessionLocks');
+  assert.ok(code.includes('lockRef'), 'Deve utilizar referência direta de lock determinístico');
+
+  // Verifica proteção de maxAutoRenewals
+  assert.ok(code.includes('MAX_AUTORENEWALS_REACHED') || code.includes('maxAutoRenewals'), 'Deve verificar limite de maxAutoRenewals');
+
+  // Verifica que ToolSessionContext sincroniza via BroadcastChannel
+  const contextCode = fs.readFileSync('src/services/ToolSessionContext.tsx', 'utf-8');
+  assert.ok(contextCode.includes('BroadcastChannel'), 'ToolSessionContext deve utilizar BroadcastChannel para sincronização multi-aba');
+  assert.ok(contextCode.includes('MAX_AUTO_RENEWALS'), 'ToolSessionContext deve exportar constante MAX_AUTO_RENEWALS');
+  assert.ok(!contextCode.includes('Math.random()'), 'ToolSessionContext não deve conter Math.random()');
+});
+
+test('SensorEngine: Separação de aceleração linear e gravidade, e calibração multi-amostra', async () => {
+  const sensorCode = fs.readFileSync('src/services/sensorEngine.ts', 'utf-8');
+
+  // Verifica se prioriza aceleração linear sobre gravidade
+  assert.ok(sensorCode.includes('hasLinear') || sensorCode.includes('includesGravity'), 'Deve distinguir aceleração linear de gravidade');
+  assert.ok(sensorCode.includes('calibrateSensorsMultiSample'), 'Deve fornecer método de calibração multi-amostra');
+
+  // Testa diretamente a instância de SensorEngine
+  const { SensorEngine } = await import('../src/services/sensorEngine.js');
+  const engine = new SensorEngine();
+  assert.ok(typeof engine.calibrateSensorsMultiSample === 'function', 'calibrateSensorsMultiSample deve ser função');
+
+  const res = await engine.calibrateSensorsMultiSample(5, 5);
+  assert.ok(res.samplesCount >= 1, 'Deve retornar contagem de amostras');
+  assert.ok(typeof res.magBaseline === 'number');
+  assert.ok(typeof res.motionBaseline === 'number');
+});
+

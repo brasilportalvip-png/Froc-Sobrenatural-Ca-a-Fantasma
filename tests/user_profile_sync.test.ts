@@ -86,7 +86,32 @@ test('Perfil de Usuário - Validação de Proteção das Rotas de Perfil (401 pa
   assert.ok(getProfileRes.body?.error, 'Deve retornar mensagem de erro');
 });
 
-test('Perfil de Usuário - ensureUserProfileServer cria perfil com dados mínimos e seguros', async () => {
+test('Perfil de Usuário - ensureUserProfileServer cria perfil com dados mínimos e seguros', async (t: any) => {
+  const userStore = new Map<string, any>();
+  t.mock.method(adminDb, 'collection', (colName: string) => {
+    if (colName === 'users') {
+      return {
+        doc: (id: string) => ({
+          path: `users/${id}`,
+          get: async () => ({
+            exists: userStore.has(id),
+            data: () => userStore.get(id),
+          }),
+          set: async (val: any) => {
+            userStore.set(id, val);
+          },
+          update: async (val: any) => {
+            userStore.set(id, { ...userStore.get(id), ...val });
+          },
+          delete: async () => {
+            userStore.delete(id);
+          },
+        }),
+      };
+    }
+    return (adminDb as any).collection(colName);
+  });
+
   const testUid = `test_user_${Date.now()}`;
   const mockUserRecord = {
     uid: testUid,
