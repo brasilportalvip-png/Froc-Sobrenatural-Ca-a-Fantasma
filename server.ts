@@ -1,4 +1,5 @@
 import path from 'path';
+import http from 'http';
 import { fileURLToPath } from 'url';
 import express from 'express';
 import { app } from './src/serverApp';
@@ -10,13 +11,15 @@ const PORT = parseInt(process.env.APP_PORT || (process.env.PORT === '8080' ? '30
 const isProd = process.env.NODE_ENV === 'production';
 
 async function setupApp() {
+  const server = http.createServer(app);
+
   if (!isProd) {
     const { createServer: createViteServer } = await import('vite');
     const vite = await createViteServer({
+      logLevel: 'error',
       server: {
         middlewareMode: true,
-        hmr: false,
-        ws: false,
+        ws: { server },
       },
       appType: 'spa',
     });
@@ -29,7 +32,7 @@ async function setupApp() {
     });
   }
 
-  app.listen(PORT, '0.0.0.0', () => {
+  server.listen(PORT, '0.0.0.0', () => {
     console.log(`[Froc Sobrenatural] Servidor rodando em http://localhost:${PORT} (Modo: ${isProd ? 'produção' : 'desenvolvimento'})`);
   });
 }
