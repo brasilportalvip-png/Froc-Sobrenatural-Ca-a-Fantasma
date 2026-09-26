@@ -129,6 +129,12 @@ test('Ouija Forense: Código-fonte do OuijaModule não contém manipulação de 
 
   // 3. Não deve inventar magnetômetro 45
   assert.equal(code.includes('|| 45'), false, 'Não deve conter fallback fictício 45 µT');
+
+  // 4. Centro neutro inicial deve estar fora do raio de captura da letra T
+  assert.ok(code.includes('{ x: 50, y: 43 }'), 'Posição inicial neutra da prancheta deve ser (50, 43)');
+  assert.ok(code.includes('Math.hypot(newX - 50, newY - 43)'), 'Verificação de deslocamento de origem deve usar centro neutro (50, 43)');
+  assert.ok(code.includes('hasDisplacedFromStartRef.current'), 'Dwell deve exigir deslocamento real da origem');
+  assert.ok(code.includes('hasReceivedSensorSignalRef.current'), 'Dwell deve exigir sinal físico ativo');
 });
 
 test('SensorEngine: Inicialização, calibragem de baseline e leituras de sensores físicos', async () => {

@@ -95,9 +95,9 @@ export const PrivacyPolicy: React.FC<{ onBackToApp: () => void }> = ({ onBackToA
               Para exercer seus direitos de privacidade, dúvidas ou solicitações de exclusão de conta, entre em contato através do canal de atendimento do projeto:
             </p>
             <div className="bg-[#050b14] border border-cyan-500/20 p-3 rounded-lg text-xs font-mono text-cyan-300">
-              Canal de Privacidade: <strong className="text-slate-200">[INSERIR E-MAIL DE CONTATO DO RESPONSÁVEL]</strong>
+              Canal de Privacidade: <strong className="text-slate-200">brasilportalvip@gmail.com</strong>
               <div className="text-[10px] text-slate-400 mt-1">
-                * Pendência pré-produção: informar o e-mail formal do encarregado de dados antes do lançamento comercial aberto.
+                Encarregado pelo tratamento de dados e suporte a direitos de privacidade (LGPD).
               </div>
             </div>
           </section>

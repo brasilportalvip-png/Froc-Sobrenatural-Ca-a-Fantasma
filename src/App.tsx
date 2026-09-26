@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, Suspense } from 'react';
 import {
   ModuleTab,
   Session,
@@ -16,25 +16,55 @@ import {
 } from './services/storage';
 import { AudioEngine, AudioMetrics } from './services/audioEngine';
 import { SensorEngine } from './services/sensorEngine';
-import { CommunicationModule } from './components/CommunicationModule';
-import { VisionModule } from './components/VisionModule';
-import { OuijaModule } from './components/OuijaModule';
-import { SensorsModule } from './components/SensorsModule';
-import { EvidenceModule } from './components/EvidenceModule';
-import { BlindTestModule } from './components/BlindTestModule';
-import { SettingsModule } from './components/SettingsModule';
 import { PWAInstallButton, OfflineIndicator } from './components/PWAInstallButton';
-import { AuthModal } from './components/AuthModal';
-import { WalletModal } from './components/WalletModal';
-import { UserPanel } from './components/UserPanel';
-import { AdminPanel } from './components/AdminPanel';
-import { PrivacyPolicy } from './components/PrivacyPolicy';
-import { TermsOfUse } from './components/TermsOfUse';
-import { NotFoundPage } from './components/NotFoundPage';
 import { AppFooter } from './components/AppFooter';
 import { ToolSessionGate } from './components/ToolSessionGate';
 import { useAuth } from './services/AuthContext';
 import { useToolSession } from './services/ToolSessionContext';
+
+// Code-splitting via React.lazy para manter o JS inicial estritamente abaixo de 500 KB
+const CommunicationModule = React.lazy(() =>
+  import('./components/CommunicationModule').then((m) => ({ default: m.CommunicationModule }))
+);
+const VisionModule = React.lazy(() =>
+  import('./components/VisionModule').then((m) => ({ default: m.VisionModule }))
+);
+const OuijaModule = React.lazy(() =>
+  import('./components/OuijaModule').then((m) => ({ default: m.OuijaModule }))
+);
+const SensorsModule = React.lazy(() =>
+  import('./components/SensorsModule').then((m) => ({ default: m.SensorsModule }))
+);
+const EvidenceModule = React.lazy(() =>
+  import('./components/EvidenceModule').then((m) => ({ default: m.EvidenceModule }))
+);
+const BlindTestModule = React.lazy(() =>
+  import('./components/BlindTestModule').then((m) => ({ default: m.BlindTestModule }))
+);
+const SettingsModule = React.lazy(() =>
+  import('./components/SettingsModule').then((m) => ({ default: m.SettingsModule }))
+);
+const AuthModal = React.lazy(() =>
+  import('./components/AuthModal').then((m) => ({ default: m.AuthModal }))
+);
+const WalletModal = React.lazy(() =>
+  import('./components/WalletModal').then((m) => ({ default: m.WalletModal }))
+);
+const UserPanel = React.lazy(() =>
+  import('./components/UserPanel').then((m) => ({ default: m.UserPanel }))
+);
+const AdminPanel = React.lazy(() =>
+  import('./components/AdminPanel').then((m) => ({ default: m.AdminPanel }))
+);
+const PrivacyPolicy = React.lazy(() =>
+  import('./components/PrivacyPolicy').then((m) => ({ default: m.PrivacyPolicy }))
+);
+const TermsOfUse = React.lazy(() =>
+  import('./components/TermsOfUse').then((m) => ({ default: m.TermsOfUse }))
+);
+const NotFoundPage = React.lazy(() =>
+  import('./components/NotFoundPage').then((m) => ({ default: m.NotFoundPage }))
+);
 import {
   Radio,
   Eye,
@@ -1038,178 +1068,187 @@ export default function App() {
 
       {/* Main Module Content Viewport */}
       <main className="flex-1 max-w-7xl w-full mx-auto p-3 sm:p-4">
-        {activeTab === 'communication' && (
-          <ToolSessionGate
-            toolId="communication"
-            onOpenWallet={() => setIsWalletModalOpen(true)}
-            onOpenAuth={() => setIsAuthModalOpen(true)}
-          >
-            <CommunicationModule
-              activeSession={activeSession}
-              onStartSession={handleStartSession}
-              onEndSession={handleEndSession}
-              isRecording={isRecordingAudio}
-              onToggleRecording={handleToggleRecording}
-              audioMetrics={audioMetrics}
-              sensorState={sensorState}
-              evidenceList={evidenceList}
-              onAddQuestionEvidence={handleAddQuestionEvidence}
-              onSaveLiveCaptionEvidence={handleSaveLiveCaptionEvidence}
-              onGetAudioChunk={(durationMs) => audioEngineRef.current?.recordChunk(durationMs) ?? Promise.resolve(null)}
-              onNavigateToEvidence={handleNavigateToEvidence}
-              onUpdateEvidenceDecision={handleUpdateEvidenceDecision}
-              onNavigateTab={(tab) => setActiveTab(tab)}
+        <Suspense
+          fallback={
+            <div className="flex flex-col items-center justify-center min-h-[350px] gap-3 text-cyan-400 font-mono text-xs">
+              <div className="w-6 h-6 border-2 border-cyan-400 border-t-transparent rounded-full animate-spin" />
+              <span>Carregando módulo pericial...</span>
+            </div>
+          }
+        >
+          {activeTab === 'communication' && (
+            <ToolSessionGate
+              toolId="communication"
               onOpenWallet={() => setIsWalletModalOpen(true)}
               onOpenAuth={() => setIsAuthModalOpen(true)}
+            >
+              <CommunicationModule
+                activeSession={activeSession}
+                onStartSession={handleStartSession}
+                onEndSession={handleEndSession}
+                isRecording={isRecordingAudio}
+                onToggleRecording={handleToggleRecording}
+                audioMetrics={audioMetrics}
+                sensorState={sensorState}
+                evidenceList={evidenceList}
+                onAddQuestionEvidence={handleAddQuestionEvidence}
+                onSaveLiveCaptionEvidence={handleSaveLiveCaptionEvidence}
+                onGetAudioChunk={(durationMs) => audioEngineRef.current?.recordChunk(durationMs) ?? Promise.resolve(null)}
+                onNavigateToEvidence={handleNavigateToEvidence}
+                onUpdateEvidenceDecision={handleUpdateEvidenceDecision}
+                onNavigateTab={(tab) => setActiveTab(tab)}
+                onOpenWallet={() => setIsWalletModalOpen(true)}
+                onOpenAuth={() => setIsAuthModalOpen(true)}
+                hasAudioPermission={hasAudioPermission}
+                onRequestMicPermission={handleRequestMicPermission}
+                hasGemini={hasGemini}
+              />
+            </ToolSessionGate>
+          )}
+
+          {activeTab === 'vision' && (
+            <ToolSessionGate
+              toolId="vision"
+              onOpenWallet={() => setIsWalletModalOpen(true)}
+              onOpenAuth={() => setIsAuthModalOpen(true)}
+            >
+              <VisionModule
+                activeSession={activeSession}
+                onSavePhotoEvidence={handleSavePhotoEvidence}
+                evidenceList={evidenceList}
+              />
+            </ToolSessionGate>
+          )}
+
+          {activeTab === 'ouija' && (
+            <ToolSessionGate
+              toolId="ouija"
+              onOpenWallet={() => setIsWalletModalOpen(true)}
+              onOpenAuth={() => setIsAuthModalOpen(true)}
+            >
+              <OuijaModule
+                activeSession={activeSession}
+                onSaveOuijaEvidence={handleSaveOuijaEvidence}
+                evidenceList={evidenceList}
+                sensorState={sensorState}
+                audioMetrics={audioMetrics}
+                onRequestSensorPermissions={() =>
+                  sensorEngineRef.current?.requestMotionPermission() ?? Promise.resolve(false)
+                }
+                onCalibrateSensors={() =>
+                  sensorEngineRef.current?.calibrateSensors()
+                }
+              />
+            </ToolSessionGate>
+          )}
+
+          {activeTab === 'sensors' && (
+            <SensorsModule
+              sensorState={sensorState}
+              onCalibrateMagneticBaseline={() =>
+                sensorEngineRef.current?.calibrateMagneticBaseline()
+              }
+              onRequestMotionPermission={() =>
+                sensorEngineRef.current?.requestMotionPermission() ?? Promise.resolve(false)
+              }
+            />
+          )}
+
+          {activeTab === 'evidence' && (
+            <ToolSessionGate
+              toolId="evidenceAnalysis"
+              onOpenWallet={() => setIsWalletModalOpen(true)}
+              onOpenAuth={() => setIsAuthModalOpen(true)}
+            >
+              <EvidenceModule
+                activeSession={activeSession}
+                sessions={sessions}
+                selectedSessionId={selectedSessionId}
+                onSelectSession={(id) => setSelectedSessionId(id)}
+                evidenceList={evidenceList}
+                highlightedEvidenceId={highlightedEvidenceId}
+                onDeleteSession={handleDeleteSession}
+                onAddIndependentReview={handleAddIndependentReview}
+              />
+            </ToolSessionGate>
+          )}
+
+          {activeTab === 'blindtest' && (
+            <ToolSessionGate
+              toolId="blindTest"
+              onOpenWallet={() => setIsWalletModalOpen(true)}
+              onOpenAuth={() => setIsAuthModalOpen(true)}
+            >
+              <BlindTestModule
+                activeSession={activeSession}
+                onLogEvidence={handleLogEvidence}
+              />
+            </ToolSessionGate>
+          )}
+
+          {activeTab === 'settings' && (
+            <SettingsModule
               hasAudioPermission={hasAudioPermission}
               onRequestMicPermission={handleRequestMicPermission}
               hasGemini={hasGemini}
+              onClearAllData={handleClearAllData}
+              availableMics={availableMics}
+              selectedMicId={selectedMicId}
+              onSelectMic={(id) => {
+                setSelectedMicId(id);
+                audioEngineRef.current?.startMicrophone(id);
+              }}
             />
-          </ToolSessionGate>
-        )}
+          )}
 
-        {activeTab === 'vision' && (
-          <ToolSessionGate
-            toolId="vision"
-            onOpenWallet={() => setIsWalletModalOpen(true)}
-            onOpenAuth={() => setIsAuthModalOpen(true)}
-          >
-            <VisionModule
-              activeSession={activeSession}
-              onSavePhotoEvidence={handleSavePhotoEvidence}
-              evidenceList={evidenceList}
+          {activeTab === 'painel' && (
+            <UserPanel
+              onBackToApp={() => {
+                setActiveTab('communication');
+                window.history.pushState({}, '', '/');
+              }}
+              onOpenAuth={() => setIsAuthModalOpen(true)}
+              onOpenWalletModal={() => setIsWalletModalOpen(true)}
             />
-          </ToolSessionGate>
-        )}
+          )}
 
-        {activeTab === 'ouija' && (
-          <ToolSessionGate
-            toolId="ouija"
-            onOpenWallet={() => setIsWalletModalOpen(true)}
-            onOpenAuth={() => setIsAuthModalOpen(true)}
-          >
-            <OuijaModule
-              activeSession={activeSession}
-              onSaveOuijaEvidence={handleSaveOuijaEvidence}
-              evidenceList={evidenceList}
-              sensorState={sensorState}
-              audioMetrics={audioMetrics}
-              onRequestSensorPermissions={() =>
-                sensorEngineRef.current?.requestMotionPermission() ?? Promise.resolve(false)
-              }
-              onCalibrateSensors={() =>
-                sensorEngineRef.current?.calibrateSensors()
-              }
+          {activeTab === 'admin' && (
+            <AdminPanel
+              onBackToApp={() => {
+                setActiveTab('communication');
+                window.history.pushState({}, '', '/');
+              }}
+              onOpenAuth={() => setIsAuthModalOpen(true)}
             />
-          </ToolSessionGate>
-        )}
+          )}
 
-        {activeTab === 'sensors' && (
-          <SensorsModule
-            sensorState={sensorState}
-            onCalibrateMagneticBaseline={() =>
-              sensorEngineRef.current?.calibrateMagneticBaseline()
-            }
-            onRequestMotionPermission={() =>
-              sensorEngineRef.current?.requestMotionPermission() ?? Promise.resolve(false)
-            }
-          />
-        )}
-
-        {activeTab === 'evidence' && (
-          <ToolSessionGate
-            toolId="evidenceAnalysis"
-            onOpenWallet={() => setIsWalletModalOpen(true)}
-            onOpenAuth={() => setIsAuthModalOpen(true)}
-          >
-            <EvidenceModule
-              activeSession={activeSession}
-              sessions={sessions}
-              selectedSessionId={selectedSessionId}
-              onSelectSession={(id) => setSelectedSessionId(id)}
-              evidenceList={evidenceList}
-              highlightedEvidenceId={highlightedEvidenceId}
-              onDeleteSession={handleDeleteSession}
-              onAddIndependentReview={handleAddIndependentReview}
+          {activeTab === 'privacy' && (
+            <PrivacyPolicy
+              onBackToApp={() => {
+                setActiveTab('communication');
+                window.history.pushState({}, '', '/');
+              }}
             />
-          </ToolSessionGate>
-        )}
+          )}
 
-        {activeTab === 'blindtest' && (
-          <ToolSessionGate
-            toolId="blindTest"
-            onOpenWallet={() => setIsWalletModalOpen(true)}
-            onOpenAuth={() => setIsAuthModalOpen(true)}
-          >
-            <BlindTestModule
-              activeSession={activeSession}
-              onLogEvidence={handleLogEvidence}
+          {activeTab === 'terms' && (
+            <TermsOfUse
+              onBackToApp={() => {
+                setActiveTab('communication');
+                window.history.pushState({}, '', '/');
+              }}
             />
-          </ToolSessionGate>
-        )}
+          )}
 
-        {activeTab === 'settings' && (
-          <SettingsModule
-            hasAudioPermission={hasAudioPermission}
-            onRequestMicPermission={handleRequestMicPermission}
-            hasGemini={hasGemini}
-            onClearAllData={handleClearAllData}
-            availableMics={availableMics}
-            selectedMicId={selectedMicId}
-            onSelectMic={(id) => {
-              setSelectedMicId(id);
-              audioEngineRef.current?.startMicrophone(id);
-            }}
-          />
-        )}
-
-        {activeTab === 'painel' && (
-          <UserPanel
-            onBackToApp={() => {
-              setActiveTab('communication');
-              window.history.pushState({}, '', '/');
-            }}
-            onOpenAuth={() => setIsAuthModalOpen(true)}
-            onOpenWalletModal={() => setIsWalletModalOpen(true)}
-          />
-        )}
-
-        {activeTab === 'admin' && (
-          <AdminPanel
-            onBackToApp={() => {
-              setActiveTab('communication');
-              window.history.pushState({}, '', '/');
-            }}
-            onOpenAuth={() => setIsAuthModalOpen(true)}
-          />
-        )}
-
-        {activeTab === 'privacy' && (
-          <PrivacyPolicy
-            onBackToApp={() => {
-              setActiveTab('communication');
-              window.history.pushState({}, '', '/');
-            }}
-          />
-        )}
-
-        {activeTab === 'terms' && (
-          <TermsOfUse
-            onBackToApp={() => {
-              setActiveTab('communication');
-              window.history.pushState({}, '', '/');
-            }}
-          />
-        )}
-
-        {activeTab === 'notfound' && (
-          <NotFoundPage
-            onBackToApp={() => {
-              setActiveTab('communication');
-              window.history.pushState({}, '', '/');
-            }}
-          />
-        )}
+          {activeTab === 'notfound' && (
+            <NotFoundPage
+              onBackToApp={() => {
+                setActiveTab('communication');
+                window.history.pushState({}, '', '/');
+              }}
+            />
+          )}
+        </Suspense>
       </main>
 
       {/* Footer Legal e Institucional */}
@@ -1243,15 +1282,21 @@ export default function App() {
       </footer>
 
       {/* Modals for Auth and Wallet */}
-      <AuthModal
-        isOpen={isAuthModalOpen}
-        onClose={() => setIsAuthModalOpen(false)}
-      />
+      <Suspense fallback={null}>
+        {isAuthModalOpen && (
+          <AuthModal
+            isOpen={isAuthModalOpen}
+            onClose={() => setIsAuthModalOpen(false)}
+          />
+        )}
 
-      <WalletModal
-        isOpen={isWalletModalOpen}
-        onClose={() => setIsWalletModalOpen(false)}
-      />
+        {isWalletModalOpen && (
+          <WalletModal
+            isOpen={isWalletModalOpen}
+            onClose={() => setIsWalletModalOpen(false)}
+          />
+        )}
+      </Suspense>
     </div>
   );
 }

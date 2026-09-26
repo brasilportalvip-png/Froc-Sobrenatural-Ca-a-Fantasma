@@ -261,12 +261,14 @@ export const EvidenceModule: React.FC<Props> = ({
 
                       <div className="flex items-center gap-2 text-[10px] font-mono text-slate-400">
                         {item.signalData && <span>dBFS: {item.signalData.dbfs.toFixed(0)}</span>}
-                        {item.candidateTranscription ? (
+                        {!item.hasAudio ? (
+                          <span className="text-slate-500 italic">Sem áudio anexado</span>
+                        ) : item.candidateTranscription ? (
                           <span className="text-cyan-300 font-semibold truncate max-w-[120px]">
                             "{item.candidateTranscription}"
                           </span>
                         ) : (
-                          <span className="text-slate-500 italic">Sem resposta fonética</span>
+                          <span className="text-slate-500 italic">Sem fala detectada</span>
                         )}
                       </div>
                     </div>

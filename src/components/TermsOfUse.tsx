@@ -98,9 +98,9 @@ export const TermsOfUse: React.FC<{ onBackToApp: () => void }> = ({ onBackToApp 
               Em caso de dúvidas sobre pedidos, recarga de carteira ou reporte de inconsistências:
             </p>
             <div className="bg-[#050b14] border border-cyan-500/20 p-3 rounded-lg text-xs font-mono text-cyan-300">
-              Canal de Suporte: <strong className="text-slate-200">[INSERIR E-MAIL DE CONTATO DO RESPONSÁVEL]</strong>
+              Canal de Suporte: <strong className="text-slate-200">brasilportalvip@gmail.com</strong>
               <div className="text-[10px] text-slate-400 mt-1">
-                * Pendência pré-produção: definir canal de suporte ao cliente antes de aceitar pagamentos reais no Mercado Pago.
+                Atendimento a dúvidas sobre recargas, carteira e orientações sobre os instrumentos.
               </div>
             </div>
           </section>

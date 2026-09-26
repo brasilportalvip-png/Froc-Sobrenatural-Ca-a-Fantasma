@@ -328,7 +328,19 @@ export const CommunicationModule: React.FC<Props> = ({
     setIsProcessing(true);
 
     try {
-      const result = await onAddQuestionEvidence(q);
+      let audioBlob: Blob | undefined;
+      if (onGetAudioChunk && hasAudioPermission) {
+        try {
+          const chunk = await onGetAudioChunk(3500);
+          if (chunk?.blob && chunk.blob.size > 0) {
+            audioBlob = chunk.blob;
+          }
+        } catch (audioErr) {
+          console.warn('Não foi possível obter áudio para a pergunta:', audioErr);
+        }
+      }
+
+      const result = await onAddQuestionEvidence(q, audioBlob);
       if (!result) {
         setQuestionText(q);
         setQuestionError('Consulta não concluída. Verifique a conexão, o saldo ou a disponibilidade da IA; sua pergunta foi mantida.');

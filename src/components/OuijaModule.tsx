@@ -133,8 +133,8 @@ export const OuijaModule: React.FC<Props> = ({
   // Modo padrão: 'automatic' (varredura física baseada em sensores reais)
   const [ouijaMode, setOuijaMode] = useState<'automatic' | 'digital' | 'physical'>('automatic');
 
-  // Automatic & Digital board coordinates
-  const [planchettePos, setPlanchettePos] = useState<{ x: number; y: number }>({ x: 50, y: 50 });
+  // Automatic & Digital board coordinates: centro neutro pericial (x: 50%, y: 43%) distante de qualquer letra
+  const [planchettePos, setPlanchettePos] = useState<{ x: number; y: number }>({ x: 50, y: 43 });
   const [touchVelocity, setTouchVelocity] = useState<number>(0);
   const [currentSequence, setCurrentSequence] = useState<string[]>([]);
   const [captureLogs, setCaptureLogs] = useState<AutomaticCaptureLog[]>([]);
@@ -189,6 +189,9 @@ export const OuijaModule: React.FC<Props> = ({
     setCaptureLogs([]);
     setPhysicalMarkedLetters([]);
     setIsAutoScanning(true);
+    setPlanchettePos({ x: 50, y: 43 });
+    posRef.current = { x: 50, y: 43 };
+    velRef.current = { vx: 0, vy: 0 };
     cumulativeTravelRef.current = 0;
     hasDisplacedFromStartRef.current = false;
     hasReceivedSensorSignalRef.current = false;
@@ -258,6 +261,14 @@ export const OuijaModule: React.FC<Props> = ({
     setFlashSymbol(null);
     setDwellProgress(0);
     setDwellTarget(null);
+    setPlanchettePos({ x: 50, y: 43 });
+    posRef.current = { x: 50, y: 43 };
+    velRef.current = { vx: 0, vy: 0 };
+    cumulativeTravelRef.current = 0;
+    hasDisplacedFromStartRef.current = false;
+    hasReceivedSensorSignalRef.current = false;
+    lastCapturedSymbolRef.current = null;
+    leftLastCaptureRadiusRef.current = true;
   };
 
   const handleSetQuestionContext = (e: React.FormEvent) => {
@@ -392,8 +403,8 @@ export const OuijaModule: React.FC<Props> = ({
       const frameTravel = Math.hypot(newX - currentPos.x, newY - currentPos.y);
       cumulativeTravelRef.current += frameTravel;
 
-      // Detectar se o ponteiro já se deslocou da posição de repouso inicial (50, 50)
-      const distFromOrigin = Math.hypot(newX - 50, newY - 50);
+      // Detectar se o ponteiro já se deslocou da posição de repouso inicial neutra (50, 43)
+      const distFromOrigin = Math.hypot(newX - 50, newY - 43);
       if (distFromOrigin > 3.5 || cumulativeTravelRef.current > 6.0) {
         hasDisplacedFromStartRef.current = true;
       }

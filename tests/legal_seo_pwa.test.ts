@@ -71,3 +71,20 @@ test('SEO & PWA - Arquivos estáticos essenciais presentes e configurados', () =
   assert.ok(htmlContent.includes('twitter:image'), 'index.html deve conter twitter:image');
   assert.ok(!htmlContent.includes('user-scalable=no'), 'index.html não deve bloquear zoom (acessibilidade)');
 });
+
+test('Termos Legais e Privacidade - Verificação de integridade sem placeholders pendentes', () => {
+  const privacyPath = path.join(process.cwd(), 'src', 'components', 'PrivacyPolicy.tsx');
+  const termsPath = path.join(process.cwd(), 'src', 'components', 'TermsOfUse.tsx');
+
+  assert.ok(fs.existsSync(privacyPath), 'PrivacyPolicy.tsx deve existir');
+  assert.ok(fs.existsSync(termsPath), 'TermsOfUse.tsx deve existir');
+
+  const privacyContent = fs.readFileSync(privacyPath, 'utf8');
+  const termsContent = fs.readFileSync(termsPath, 'utf8');
+
+  assert.ok(!privacyContent.includes('[INSERIR'), 'PrivacyPolicy não pode conter placeholders [INSERIR]');
+  assert.ok(!termsContent.includes('[INSERIR'), 'TermsOfUse não pode conter placeholders [INSERIR]');
+  assert.ok(privacyContent.includes('brasilportalvip@gmail.com'), 'PrivacyPolicy deve conter o e-mail de contato oficial');
+  assert.ok(termsContent.includes('brasilportalvip@gmail.com'), 'TermsOfUse deve conter o e-mail de suporte oficial');
+});
+
