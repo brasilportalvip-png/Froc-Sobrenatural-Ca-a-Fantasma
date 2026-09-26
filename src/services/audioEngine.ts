@@ -7,6 +7,28 @@ export interface AudioMetrics {
   timeData: Uint8Array;
 }
 
+export function getOptimalAudioMimeType(): string | undefined {
+  if (typeof MediaRecorder === 'undefined' || typeof MediaRecorder.isTypeSupported !== 'function') {
+    return undefined;
+  }
+  const candidates = [
+    'audio/webm;codecs=opus',
+    'audio/webm',
+    'audio/mp4;codecs=mp4a.40.2',
+    'audio/mp4',
+    'audio/ogg;codecs=opus',
+    'audio/aac',
+  ];
+  for (const candidate of candidates) {
+    try {
+      if (MediaRecorder.isTypeSupported(candidate)) {
+        return candidate;
+      }
+    } catch {}
+  }
+  return undefined;
+}
+
 export class AudioEngine {
   private audioCtx: AudioContext | null = null;
   private analyser: AnalyserNode | null = null;
@@ -17,21 +39,70 @@ export class AudioEngine {
   private freqArray: Uint8Array<ArrayBuffer> | null = null;
   private timeArray: Uint8Array<ArrayBuffer> | null = null;
   private isRecordingSession = false;
+  private lastErrorMessage: string | null = null;
 
-  public async startMicrophone(deviceId?: string): Promise<boolean> {
+  public get lastError(): string | null {
+    return this.lastErrorMessage;
+  }
+
+  public isMicrophoneActive(): boolean {
+    return !!(
+      this.micStream &&
+      this.micStream.active &&
+      this.micStream.getAudioTracks().some((t) => t.readyState === 'live')
+    );
+  }
+
+  public async startMicrophone(deviceId?: string): Promise<{ success: boolean; error?: string }> {
     try {
       this.stopMicrophone();
+      this.lastErrorMessage = null;
 
-      const constraints: MediaStreamConstraints = {
-        audio: {
-          deviceId: deviceId ? { exact: deviceId } : undefined,
-          echoCancellation: false, // In forensic analysis, keep raw ambient sound
-          noiseSuppression: false, // Keep raw background frequencies
-          autoGainControl: false,  // Avoid artificial volume pumping
-        },
-      };
+      let stream: MediaStream | null = null;
 
-      this.micStream = await navigator.mediaDevices.getUserMedia(constraints);
+      // 1. Tentar com deviceId especificado se fornecido
+      if (deviceId) {
+        try {
+          const constraints: MediaStreamConstraints = {
+            audio: {
+              deviceId: { exact: deviceId },
+              echoCancellation: false,
+              noiseSuppression: false,
+              autoGainControl: false,
+            },
+          };
+          stream = await navigator.mediaDevices.getUserMedia(constraints);
+        } catch (deviceErr: any) {
+          console.warn('[AudioEngine] Microfone específico indisponível, tentando microfone padrão:', deviceErr?.message);
+          stream = null;
+        }
+      }
+
+      // 2. Tentar microfone padrão do sistema com parâmetros forenses
+      if (!stream) {
+        try {
+          const forensicConstraints: MediaStreamConstraints = {
+            audio: {
+              echoCancellation: false,
+              noiseSuppression: false,
+              autoGainControl: false,
+            },
+          };
+          stream = await navigator.mediaDevices.getUserMedia(forensicConstraints);
+        } catch (forensicErr: any) {
+          // 3. Fallback resiliente para Safari/iOS e navegadores móveis com restrições
+          console.warn('[AudioEngine] Tentando constraints básicas de áudio:', forensicErr?.message);
+          stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        }
+      }
+
+      if (!stream || stream.getAudioTracks().length === 0) {
+        const msg = 'Nenhum canal de áudio retornado pelo microfone.';
+        this.lastErrorMessage = msg;
+        return { success: false, error: msg };
+      }
+
+      this.micStream = stream;
       const AudioCtxClass = window.AudioContext || (window as any).webkitAudioContext;
       this.audioCtx = new AudioCtxClass();
 
@@ -49,10 +120,16 @@ export class AudioEngine {
       this.freqArray = new Uint8Array(this.analyser.frequencyBinCount);
       this.timeArray = new Uint8Array(this.analyser.fftSize);
 
-      return true;
-    } catch (err) {
+      return { success: true };
+    } catch (err: any) {
       console.warn('Falha ao inicializar microfone:', err);
-      return false;
+      const msg = err?.name === 'NotAllowedError'
+        ? 'Permissão de microfone negada no navegador.'
+        : err?.name === 'NotFoundError'
+        ? 'Nenhum microfone físico encontrado no dispositivo.'
+        : err?.message || 'Falha ao acessar microfone.';
+      this.lastErrorMessage = msg;
+      return { success: false, error: msg };
     }
   }
 
@@ -122,18 +199,24 @@ export class AudioEngine {
   }
 
   public startRecording(): boolean {
-    if (!this.micStream) return false;
+    if (!this.micStream || !this.isMicrophoneActive()) return false;
     try {
       this.recordedChunks = [];
-      const mimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
-        ? 'audio/webm;codecs=opus'
-        : MediaRecorder.isTypeSupported('audio/webm')
-        ? 'audio/webm'
-        : 'audio/mp4';
+      const optimalMime = getOptimalAudioMimeType();
 
-      this.mediaRecorder = new MediaRecorder(this.micStream, { mimeType });
+      let recorder: MediaRecorder;
+      try {
+        recorder = optimalMime
+          ? new MediaRecorder(this.micStream, { mimeType: optimalMime })
+          : new MediaRecorder(this.micStream);
+      } catch (optErr) {
+        console.warn('[AudioEngine] MediaRecorder com opções rejeitado, usando construtor padrão:', optErr);
+        recorder = new MediaRecorder(this.micStream);
+      }
+
+      this.mediaRecorder = recorder;
       this.mediaRecorder.ondataavailable = (e) => {
-        if (e.data.size > 0) {
+        if (e.data && e.data.size > 0) {
           this.recordedChunks.push(e.data);
         }
       };
@@ -141,8 +224,9 @@ export class AudioEngine {
       this.mediaRecorder.start(500); // 500ms time slices
       this.isRecordingSession = true;
       return true;
-    } catch (err) {
+    } catch (err: any) {
       console.error('Erro ao iniciar MediaRecorder:', err);
+      this.lastErrorMessage = `Erro ao iniciar gravação: ${err?.message || 'Incompatibilidade de formato'}`;
       return false;
     }
   }
@@ -154,7 +238,7 @@ export class AudioEngine {
         return;
       }
 
-      const mimeType = this.mediaRecorder.mimeType || 'audio/webm';
+      const mimeType = this.mediaRecorder.mimeType || getOptimalAudioMimeType() || 'audio/webm';
 
       this.mediaRecorder.onstop = () => {
         const fullBlob = new Blob(this.recordedChunks, { type: mimeType });
@@ -188,13 +272,19 @@ export class AudioEngine {
     return new Promise((resolve) => {
       try {
         const chunks: Blob[] = [];
-        const mimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
-          ? 'audio/webm;codecs=opus'
-          : MediaRecorder.isTypeSupported('audio/webm')
-          ? 'audio/webm'
-          : 'audio/mp4';
+        const optimalMime = getOptimalAudioMimeType();
 
-        const recorder = new MediaRecorder(stream, { mimeType });
+        let recorder: MediaRecorder;
+        try {
+          recorder = optimalMime
+            ? new MediaRecorder(stream, { mimeType: optimalMime })
+            : new MediaRecorder(stream);
+        } catch {
+          recorder = new MediaRecorder(stream);
+        }
+
+        const effectiveMime = recorder.mimeType || optimalMime || 'audio/webm';
+
         recorder.ondataavailable = (e) => {
           if (e.data && e.data.size > 0) chunks.push(e.data);
         };
@@ -203,8 +293,8 @@ export class AudioEngine {
             resolve(null);
             return;
           }
-          const blob = new Blob(chunks, { type: mimeType });
-          resolve({ blob, mimeType });
+          const blob = new Blob(chunks, { type: effectiveMime });
+          resolve({ blob, mimeType: effectiveMime });
         };
         recorder.onerror = () => resolve(null);
         recorder.start();

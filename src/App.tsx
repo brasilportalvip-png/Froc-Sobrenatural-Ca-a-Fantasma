@@ -334,16 +334,23 @@ export default function App() {
   }, [selectedSessionId]);
 
   // Request Microphone Permission
-  const requestMicPermission = async () => {
-    if (!audioEngineRef.current) return;
-    const ok = await audioEngineRef.current.startMicrophone(selectedMicId);
-    setHasAudioPermission(ok);
+  const requestMicPermission = async (): Promise<boolean> => {
+    if (!audioEngineRef.current) return false;
+    const res = await audioEngineRef.current.startMicrophone(selectedMicId);
+    setHasAudioPermission(res.success);
 
     // Refresh devices list to get real labels
-    if (ok && navigator.mediaDevices.enumerateDevices) {
-      const devices = await navigator.mediaDevices.enumerateDevices();
-      setAvailableMics(devices.filter((d) => d.kind === 'audioinput'));
+    if (res.success && navigator.mediaDevices && navigator.mediaDevices.enumerateDevices) {
+      try {
+        const devices = await navigator.mediaDevices.enumerateDevices();
+        setAvailableMics(devices.filter((d) => d.kind === 'audioinput'));
+      } catch {}
     }
+    return res.success;
+  };
+
+  const handleRequestMicPermission = async (): Promise<void> => {
+    await requestMicPermission();
   };
 
   // Start a New Session
@@ -395,8 +402,13 @@ export default function App() {
   const handleToggleRecording = async () => {
     if (!audioEngineRef.current) return;
 
-    if (!hasAudioPermission) {
-      await requestMicPermission();
+    let isAllowed = hasAudioPermission && audioEngineRef.current.isMicrophoneActive();
+    if (!isAllowed) {
+      isAllowed = await requestMicPermission();
+    }
+
+    if (!isAllowed || !audioEngineRef.current.isMicrophoneActive()) {
+      return;
     }
 
     if (isRecordingAudio) {
@@ -449,15 +461,21 @@ export default function App() {
     let base64Audio = '';
     let mimeType = 'audio/webm';
 
-    // If microphone is active and no blob passed, let's grab the current stream segment
-    if (!audioBlobToSave && audioEngineRef.current) {
-      // If recorder was already running, stop or capture slice
+    // Se não veio blob de áudio gravado, mas o microfone está ativo no dispositivo:
+    // Capturar imediatamente uma fatia real do áudio ao vivo
+    if (!audioBlobToSave && audioEngineRef.current && audioEngineRef.current.isMicrophoneActive()) {
       if (isRecordingAudio) {
         const rec = await audioEngineRef.current.stopRecording();
         audioBlobToSave = rec.blob;
         mimeType = rec.mimeType;
-        // restart recording for continuous session
+        // reiniciar gravação contínua se estava ativa
         audioEngineRef.current.startRecording();
+      } else {
+        const chunk = await audioEngineRef.current.recordChunk(2500);
+        if (chunk && chunk.blob.size > 200) {
+          audioBlobToSave = chunk.blob;
+          mimeType = chunk.mimeType;
+        }
       }
     }
 
@@ -581,21 +599,25 @@ export default function App() {
           ? sensorState.motion.magnitude
           : undefined,
       },
-      audioId: audioBlobToSave ? `audio_${evidenceId}` : undefined,
+      audioId: audioBlobToSave && audioBlobToSave.size > 0 ? `audio_${evidenceId}` : undefined,
       hasAudio: !!audioBlobToSave && audioBlobToSave.size > 0,
-      candidateTranscription: analysisResult.candidateTranscription || null,
-      confidenceScore: analysisResult.confidence || 0,
-      possibleName: analysisResult.possibleName || undefined,
+      candidateTranscription: (audioBlobToSave && audioBlobToSave.size > 0) ? (analysisResult.candidateTranscription || null) : null,
+      confidenceScore: (audioBlobToSave && audioBlobToSave.size > 0) ? (analysisResult.confidence || 0) : 0,
+      possibleName: (audioBlobToSave && audioBlobToSave.size > 0) ? (analysisResult.possibleName || undefined) : undefined,
       decisionStatus: 'pending',
       aiAnalysis: {
-        conclusion: analysisResult.conclusion || 'Nenhuma resposta identificada.',
-        confidence: analysisResult.confidence || 0,
-        voiceDetected: analysisResult.voiceDetected || false,
-        acousticAnalysis: analysisResult.acousticAnalysis || '',
+        conclusion: (!audioBlobToSave || audioBlobToSave.size === 0)
+          ? 'Consulta registrada sem amostra de áudio anexada. Pergunta formulada exclusivamente em texto.'
+          : (analysisResult.conclusion || 'Nenhuma resposta identificada.'),
+        confidence: (!audioBlobToSave || audioBlobToSave.size === 0) ? 0 : (analysisResult.confidence || 0),
+        voiceDetected: (!audioBlobToSave || audioBlobToSave.size === 0) ? false : (analysisResult.voiceDetected || false),
+        acousticAnalysis: (!audioBlobToSave || audioBlobToSave.size === 0)
+          ? 'Nenhum arquivo de áudio enviado para análise espectral.'
+          : (analysisResult.acousticAnalysis || ''),
         alternativeHypotheses: analysisResult.alternativeHypotheses || [],
         provider: analysisResult.provider || 'Motor Local',
       },
-      verifiedStatus: analysisResult.candidateTranscription
+      verifiedStatus: (audioBlobToSave && audioBlobToSave.size > 0 && analysisResult.candidateTranscription)
         ? 'inconclusive'
         : 'refuted_noise',
     };
@@ -1040,7 +1062,7 @@ export default function App() {
               onOpenWallet={() => setIsWalletModalOpen(true)}
               onOpenAuth={() => setIsAuthModalOpen(true)}
               hasAudioPermission={hasAudioPermission}
-              onRequestMicPermission={requestMicPermission}
+              onRequestMicPermission={handleRequestMicPermission}
               hasGemini={hasGemini}
             />
           </ToolSessionGate>
@@ -1129,7 +1151,7 @@ export default function App() {
         {activeTab === 'settings' && (
           <SettingsModule
             hasAudioPermission={hasAudioPermission}
-            onRequestMicPermission={requestMicPermission}
+            onRequestMicPermission={handleRequestMicPermission}
             hasGemini={hasGemini}
             onClearAllData={handleClearAllData}
             availableMics={availableMics}

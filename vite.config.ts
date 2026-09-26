@@ -54,8 +54,7 @@ export default defineConfig(() => {
           navigateFallbackDenylist: [/^\/api/],
         },
         devOptions: {
-          enabled: true,
-          type: 'module',
+          enabled: false,
         },
       }),
     ],
@@ -65,8 +64,9 @@ export default defineConfig(() => {
       },
     },
     server: {
-      hmr: process.env.DISABLE_HMR !== 'true',
-      watch: process.env.DISABLE_HMR === 'true' ? null : {},
+      hmr: false,
+      ws: false as const,
+      watch: null,
     },
   };
 });

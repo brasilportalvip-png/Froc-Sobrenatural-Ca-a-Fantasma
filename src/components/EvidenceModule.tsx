@@ -499,8 +499,9 @@ export const EvidenceModule: React.FC<Props> = ({
                 </div>
               )}
 
-              {/* Avaliação Cega Independente (Multi-ouvintes sem sugestão prévia) */}
-              <div className="bg-[#0a101c] border border-slate-800 rounded-lg p-3 space-y-2 text-xs">
+              {/* Avaliação Cega Independente (Multi-ouvintes sem sugestão prévia) - Apenas se houver arquivo de áudio */}
+              {selectedItem.hasAudio && selectedItem.audioId && (
+                <div className="bg-[#0a101c] border border-slate-800 rounded-lg p-3 space-y-2 text-xs">
                 <div className="flex justify-between items-center font-mono">
                   <span className="font-bold text-purple-400 uppercase tracking-wide">
                     AVALIAÇÃO CEGA INDEPENDENTE (PAREIDOLIA CHECK)
@@ -563,7 +564,8 @@ export const EvidenceModule: React.FC<Props> = ({
                     </div>
                   </div>
                 </div>
-              </div>
+                </div>
+              )}
             </>
           ) : (
             <p className="text-xs font-mono text-slate-500 text-center py-16">

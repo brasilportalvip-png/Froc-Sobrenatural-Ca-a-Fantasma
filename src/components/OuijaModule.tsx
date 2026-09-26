@@ -189,6 +189,15 @@ export const OuijaModule: React.FC<Props> = ({
     setCaptureLogs([]);
     setPhysicalMarkedLetters([]);
     setIsAutoScanning(true);
+    cumulativeTravelRef.current = 0;
+    hasDisplacedFromStartRef.current = false;
+    hasReceivedSensorSignalRef.current = false;
+    lastCapturedSymbolRef.current = null;
+    leftLastCaptureRadiusRef.current = true;
+    dwellProgressRef.current = 0;
+    dwellTargetRef.current = null;
+    setDwellProgress(0);
+    setDwellTarget(null);
     if (onCalibrateSensors) {
       onCalibrateSensors();
     }
@@ -271,6 +280,13 @@ export const OuijaModule: React.FC<Props> = ({
   const dwellCooldownRef = useRef<{ symbol: string; until: number } | null>(null);
   const dwellProgressRef = useRef(0);
   const dwellTargetRef = useRef<string | null>(null);
+
+  // Rastreamento estrito de trajetória para impedir fixação na posição inicial (ex: letra T)
+  const cumulativeTravelRef = useRef<number>(0);
+  const hasDisplacedFromStartRef = useRef<boolean>(false);
+  const hasReceivedSensorSignalRef = useRef<boolean>(false);
+  const lastCapturedSymbolRef = useRef<string | null>(null);
+  const leftLastCaptureRadiusRef = useRef<boolean>(true);
 
   // Motor de física 100% determinístico e baseado exclusivamente em sensores reais
   useEffect(() => {
@@ -372,6 +388,20 @@ export const OuijaModule: React.FC<Props> = ({
       if (newY < 12) { newY = 12; currentVel.vy *= -0.3; }
       if (newY > 90) { newY = 90; currentVel.vy *= -0.3; }
 
+      // Acumular trajetória física real do ponteiro
+      const frameTravel = Math.hypot(newX - currentPos.x, newY - currentPos.y);
+      cumulativeTravelRef.current += frameTravel;
+
+      // Detectar se o ponteiro já se deslocou da posição de repouso inicial (50, 50)
+      const distFromOrigin = Math.hypot(newX - 50, newY - 50);
+      if (distFromOrigin > 3.5 || cumulativeTravelRef.current > 6.0) {
+        hasDisplacedFromStartRef.current = true;
+      }
+
+      if (hasSensorInput) {
+        hasReceivedSensorSignalRef.current = true;
+      }
+
       posRef.current = { x: newX, y: newY };
       velRef.current = currentVel;
       setPlanchettePos({ x: newX, y: newY });
@@ -385,7 +415,7 @@ export const OuijaModule: React.FC<Props> = ({
       for (const symbol of BOARD_SYMBOLS) {
         const dx = symbol.x - newX;
         const dy = symbol.y - newY;
-        const d = Math.sqrt(dx * dx + dy * dy);
+        const d = Math.hypot(dx, dy);
         if (d < minDistance) {
           minDistance = d;
           closestSymbol = symbol;
@@ -395,7 +425,20 @@ export const OuijaModule: React.FC<Props> = ({
       const captureRadius = closestSymbol?.category === 'word' ? 7.5 : 5.2;
       const isNearSymbol = minDistance <= captureRadius;
       // Para dwell ser válido, a velocidade deve ser baixa (repouso ou micro-deriva lenta)
-      const isSlowEnough = speed < 12;
+      const isSlowEnough = speed < 10;
+
+      // Rastrear se a prancheta já se afastou do último símbolo capturado
+      if (lastCapturedSymbolRef.current) {
+        const lastSym = BOARD_SYMBOLS.find((s) => s.id === lastCapturedSymbolRef.current);
+        if (lastSym) {
+          const distFromLastCapture = Math.hypot(newX - lastSym.x, newY - lastSym.y);
+          if (distFromLastCapture > captureRadius * 1.6) {
+            leftLastCaptureRadiusRef.current = true;
+          }
+        } else {
+          leftLastCaptureRadiusRef.current = true;
+        }
+      }
 
       // Verificar cooldown para não re-capturar o mesmo símbolo imediatamente
       const nowMs = Date.now();
@@ -403,7 +446,25 @@ export const OuijaModule: React.FC<Props> = ({
         dwellCooldownRef.current.symbol === closestSymbol?.id &&
         nowMs < dwellCooldownRef.current.until;
 
-      if (isNearSymbol && isSlowEnough && closestSymbol && !inCooldown) {
+      // Condições periciais estritas para início ou avanço de Dwell:
+      // 1. Sensores de hardware físicos devem existir e estar transmitindo dados
+      const hasActiveHardware = !!(sensorState?.orientation?.available || sensorState?.motion?.available || sensorState?.magnetometer?.available);
+      // 2. Não pode estar em repouso absoluto na posição inicial padrão (50, 50)
+      const hasValidTrajectory = hasDisplacedFromStartRef.current && cumulativeTravelRef.current > 5.0;
+      // 3. Se acabou de capturar uma letra, não pode re-capturá-la parada no mesmo ponto
+      const notSameStationarySymbol = closestSymbol?.id !== lastCapturedSymbolRef.current || leftLastCaptureRadiusRef.current;
+
+      const isEligibleForDwell =
+        hasActiveHardware &&
+        hasReceivedSensorSignalRef.current &&
+        hasValidTrajectory &&
+        notSameStationarySymbol &&
+        isNearSymbol &&
+        isSlowEnough &&
+        closestSymbol &&
+        !inCooldown;
+
+      if (isEligibleForDwell && closestSymbol) {
         // Se mudou de símbolo durante o dwell, reiniciar contagem
         if (dwellTargetRef.current !== closestSymbol.id) {
           dwellTargetRef.current = closestSymbol.id;
@@ -424,9 +485,10 @@ export const OuijaModule: React.FC<Props> = ({
           setFlashSymbol(capturedId);
 
           // Cálculo de estabilidade baseado estritamente na desaceleração real e dados físicos
+          const sensorDelta = (sensorState?.magnetometer.delta || 0) + (sensorState?.motion.delta || 0);
           const stabilityScore = Math.min(
-            98,
-            Math.max(50, Math.round(100 - speed * 3.5 - Math.min(30, (sensorState?.magnetometer.delta || 0) * 2)))
+            95,
+            Math.max(35, Math.round(85 - speed * 3.5 - sensorDelta * 4))
           );
 
           const newLog: AutomaticCaptureLog = {
@@ -446,8 +508,10 @@ export const OuijaModule: React.FC<Props> = ({
           };
           setCaptureLogs((prev) => [newLog, ...prev.slice(0, 19)]);
 
-          // Ativar cooldown para este símbolo específico (3 segundos) para evitar capturas repetidas
-          dwellCooldownRef.current = { symbol: capturedId, until: nowMs + 3000 };
+          // Bloquear re-captura imediata enquanto a prancheta estiver parada sobre o mesmo símbolo
+          lastCapturedSymbolRef.current = capturedId;
+          leftLastCaptureRadiusRef.current = false;
+          dwellCooldownRef.current = { symbol: capturedId, until: nowMs + 4000 };
           dwellProgressRef.current = 0;
           dwellTargetRef.current = null;
           setDwellProgress(0);
@@ -625,7 +689,7 @@ export const OuijaModule: React.FC<Props> = ({
             <div className="flex items-start gap-2">
               <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
               <span>
-                <strong>Sensores Físicos Não Detectados:</strong> Este navegador ou computador não expõe acelerômetro ou magnetômetro. O ponteiro permanecerá em repouso estável. Para varredura dinâmica, abra em um smartphone ou conceda as permissões de sensores.
+                <strong>Varredura Automática Suspensa por Falta de Sensores Físicos:</strong> Este computador ou navegador não expõe acelerômetro, giroscópio ou magnetômetro. Para evitar registros falsos por imobilidade na posição inicial, a fixação automática permanece pausada. Mude para o modo <strong>Digital</strong> (arraste manual do ponteiro por mouse ou toque) ou utilize um celular com sensores físicos.
               </span>
             </div>
             {onRequestSensorPermissions && !permissionRequested && (

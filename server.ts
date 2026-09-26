@@ -6,7 +6,7 @@ import { app } from './src/serverApp';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-const PORT = parseInt(process.env.PORT || '3000', 10);
+const PORT = parseInt(process.env.APP_PORT || (process.env.PORT === '8080' ? '3000' : (process.env.PORT || '3000')), 10);
 const isProd = process.env.NODE_ENV === 'production';
 
 async function setupApp() {
@@ -15,7 +15,8 @@ async function setupApp() {
     const vite = await createViteServer({
       server: {
         middlewareMode: true,
-        hmr: process.env.DISABLE_HMR !== 'true',
+        hmr: false,
+        ws: false,
       },
       appType: 'spa',
     });

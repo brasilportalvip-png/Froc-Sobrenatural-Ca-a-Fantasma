@@ -108,6 +108,7 @@ export const CommunicationModule: React.FC<Props> = ({
     id: string;
     question: string;
     candidateTranscription?: string | null;
+    hasAudio?: boolean;
     confidence: number;
     conclusion: string;
     alternativeHypotheses: string[];
@@ -336,6 +337,7 @@ export const CommunicationModule: React.FC<Props> = ({
           id: result.id,
           question: q,
           candidateTranscription: result.candidateTranscription,
+          hasAudio: result.hasAudio,
           confidence: result.confidenceScore || 0,
           conclusion: result.details || result.aiAnalysis?.conclusion || 'Análise pericial concluída.',
           alternativeHypotheses: result.aiAnalysis?.alternativeHypotheses || ['Variação acústica natural', 'Ruído de fundo'],
@@ -993,7 +995,11 @@ export const CommunicationModule: React.FC<Props> = ({
             <div className="space-y-1 bg-[#050b14] p-2.5 rounded border border-slate-800">
               <span className="text-[10px] text-slate-500 uppercase block">Possível Transcrição:</span>
               <p className={`font-semibold ${latestDirectAnalysis.candidateTranscription ? 'text-emerald-400 font-mono text-sm' : 'text-slate-400'}`}>
-                {latestDirectAnalysis.candidateTranscription ? `"${latestDirectAnalysis.candidateTranscription}"` : 'Trecho vocal detectado, mas sem inteligibilidade suficiente.'}
+                {!latestDirectAnalysis.hasAudio
+                  ? 'Consulta registrada sem amostra de áudio anexada.'
+                  : latestDirectAnalysis.candidateTranscription
+                  ? `"${latestDirectAnalysis.candidateTranscription}"`
+                  : 'Nenhum padrão vocal detectado no áudio analisado (silêncio ou ruído ambiente).'}
               </p>
             </div>
           </div>
@@ -1153,7 +1159,7 @@ export const CommunicationModule: React.FC<Props> = ({
                         * O nome declarado no sinal jamais equivale à identidade comprovada de uma entidade.
                       </p>
                     </div>
-                  ) : item.candidateTranscription ? (
+                  ) : item.candidateTranscription && item.hasAudio ? (
                     <div className="mt-1">
                       <p className="text-xs font-mono font-bold text-cyan-300">
                         "{item.candidateTranscription}"
@@ -1162,9 +1168,13 @@ export const CommunicationModule: React.FC<Props> = ({
                         Confiança fonética calibrada: {Math.round((item.confidenceScore || 0) * 100)}%
                       </p>
                     </div>
+                  ) : !item.hasAudio ? (
+                    <p className="text-xs font-mono text-slate-400 italic mt-0.5">
+                      Consulta registrada sem amostra de áudio anexada. Pergunta formulada exclusivamente em texto.
+                    </p>
                   ) : (
                     <p className="text-xs font-mono text-slate-400 italic mt-0.5">
-                      Nenhuma resposta identificada. (Sinal ausente ou ruído ambiente sem estrutura de fala humana).
+                      Nenhuma resposta identificada no áudio (silêncio medido ou ruído ambiente sem estrutura de fala humana).
                     </p>
                   )}
                 </div>

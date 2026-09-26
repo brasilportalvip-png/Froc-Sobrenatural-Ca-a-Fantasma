@@ -1,6 +1,35 @@
 <!doctype html>
 <html lang="pt-BR">
   <head>
+    <script>
+      // HMR: Disabled. Ignore WebSocket errors per platform instructions.
+      (function () {
+        var origError = console.error;
+        var origWarn = console.warn;
+        function isViteWs(arg) {
+          if (!arg) return false;
+          var str = typeof arg === 'string' ? arg : (arg.message || arg.stack ? String(arg.message || arg.stack) : '');
+          return str.indexOf('[vite]') !== -1 || str.indexOf('WebSocket') !== -1 || str.indexOf('websocket') !== -1;
+        }
+        console.error = function () {
+          for (var i = 0; i < arguments.length; i++) {
+            if (isViteWs(arguments[i])) return;
+          }
+          origError.apply(console, arguments);
+        };
+        console.warn = function () {
+          for (var i = 0; i < arguments.length; i++) {
+            if (isViteWs(arguments[i])) return;
+          }
+          origWarn.apply(console, arguments);
+        };
+        window.addEventListener('unhandledrejection', function (e) {
+          if (isViteWs(e.reason)) {
+            e.preventDefault();
+          }
+        });
+      })();
+    </script>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <title>Froc Sobrenatural Caça Fantasma</title>
