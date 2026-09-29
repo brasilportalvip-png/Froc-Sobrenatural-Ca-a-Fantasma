@@ -192,8 +192,22 @@ export async function renewToolSession(
       throw new Error('SESSION_UID_MISMATCH');
     }
 
-    // Idempotência na renovação
+    // Idempotência na renovação por requestId
     if ((session as any).lastRenewRequestId === requestId) {
+      const wSnap = await t.get(walletRef);
+      const wData = wSnap.data() as UserWallet;
+      return {
+        success: true,
+        session,
+        balanceAfter: wData?.balance ?? 0,
+      };
+    }
+
+    // Proteção de concorrência autoritativa no Firestore (Multi-aba / Múltiplas instâncias serverless):
+    // Se duas abas ou requisições concorrentes tentarem renovar o MESMO ciclo de expiração (baseTime / expiresAt),
+    // a segunda transação detecta que lastRenewedFromExpiresAt já foi avançado para esse ciclo e retorna idempotente sem debitar.
+    const currentExpiresAt = session.expiresAt || 0;
+    if (session.lastRenewedFromExpiresAt && session.lastRenewedFromExpiresAt === currentExpiresAt) {
       const wSnap = await t.get(walletRef);
       const wData = wSnap.data() as UserWallet;
       return {
@@ -249,6 +263,7 @@ export async function renewToolSession(
       autoRenewCount: newAutoRenewCount,
       autoRenew: shouldDisableAuto ? false : session.autoRenew,
       lastRenewedAt: now,
+      lastRenewedFromExpiresAt: session.expiresAt,
       status: 'active',
       lastRenewRequestId: requestId,
     };

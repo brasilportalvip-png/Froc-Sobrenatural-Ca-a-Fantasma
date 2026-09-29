@@ -40,6 +40,7 @@ export class AudioEngine {
   private timeArray: Uint8Array<ArrayBuffer> | null = null;
   private isRecordingSession = false;
   private lastErrorMessage: string | null = null;
+  private activeChunkRecorders: Set<{ recorder: MediaRecorder; timeoutId: any; cancel: () => void }> = new Set();
 
   public get lastError(): string | null {
     return this.lastErrorMessage;
@@ -302,11 +303,36 @@ export class AudioEngine {
     const stream = this.micStream;
     if (!stream || !stream.active) return null;
     return new Promise((resolve) => {
+      let isSettled = false;
+      const safeResolve = (val: { blob: Blob; mimeType: string } | null) => {
+        if (!isSettled) {
+          isSettled = true;
+          this.activeChunkRecorders.delete(tracker);
+          resolve(val);
+        }
+      };
+
+      let recorder: MediaRecorder;
+      let timerId: any = null;
+
+      const tracker = {
+        recorder: null as any,
+        timeoutId: null as any,
+        cancel: () => {
+          if (timerId) clearTimeout(timerId);
+          try {
+            if (recorder && recorder.state !== 'inactive') {
+              recorder.stop();
+            }
+          } catch {}
+          safeResolve(null);
+        },
+      };
+
       try {
         const chunks: Blob[] = [];
         const optimalMime = getOptimalAudioMimeType();
 
-        let recorder: MediaRecorder;
         try {
           recorder = optimalMime
             ? new MediaRecorder(stream, { mimeType: optimalMime })
@@ -315,6 +341,9 @@ export class AudioEngine {
           recorder = new MediaRecorder(stream);
         }
 
+        tracker.recorder = recorder;
+        this.activeChunkRecorders.add(tracker);
+
         const effectiveMime = recorder.mimeType || optimalMime || 'audio/webm';
 
         recorder.ondataavailable = (e) => {
@@ -322,31 +351,43 @@ export class AudioEngine {
         };
         recorder.onstop = () => {
           if (chunks.length === 0) {
-            resolve(null);
+            safeResolve(null);
             return;
           }
           const blob = new Blob(chunks, { type: effectiveMime });
-          resolve({ blob, mimeType: effectiveMime });
+          safeResolve({ blob, mimeType: effectiveMime });
         };
-        recorder.onerror = () => resolve(null);
+        recorder.onerror = () => safeResolve(null);
         recorder.start();
-        setTimeout(() => {
+
+        timerId = setTimeout(() => {
           try {
             if (recorder.state === 'recording') {
               recorder.stop();
             }
           } catch {
-            resolve(null);
+            safeResolve(null);
           }
         }, durationMs);
+        tracker.timeoutId = timerId;
       } catch (err) {
         console.warn('Erro ao gravar chunk de áudio:', err);
-        resolve(null);
+        safeResolve(null);
       }
     });
   }
 
   public stopMicrophone() {
+    // Encerrar e desvincular quaisquer chunk recorders e timers ativos imediatamente
+    if (this.activeChunkRecorders.size > 0) {
+      this.activeChunkRecorders.forEach((tracker) => {
+        try {
+          tracker.cancel();
+        } catch {}
+      });
+      this.activeChunkRecorders.clear();
+    }
+
     if (this.mediaRecorder && this.mediaRecorder.state !== 'inactive') {
       try {
         this.mediaRecorder.stop();

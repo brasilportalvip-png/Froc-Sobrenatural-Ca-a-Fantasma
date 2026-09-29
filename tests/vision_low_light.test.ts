@@ -189,4 +189,12 @@ test('Vision Forensic Integrity: VisionModule.tsx contains all required controls
   // 6. Captura de imagem do Canvas processado
   assert.ok(code.includes('canvasRef.current'), 'Deve capturar pixels do Canvas processado');
   assert.ok(code.includes('onSavePhotoEvidence'), 'Deve salvar evidência com metadados periciais');
+
+  // 7. Limpeza rigorosa se video.play() falhar após getUserMedia
+  assert.ok(code.includes('mediaStream.getTracks().forEach'), 'Deve parar tracks de mediaStream se a inicialização de vídeo falhar');
+  assert.ok(code.includes('videoRef.current.srcObject = null'), 'Deve desvincular srcObject se falhar');
+
+  // 8. Tratamento de erro e rollback em handleExposureChange
+  assert.ok(code.includes('previousExposure'), 'Deve salvar previousExposure para rollback em caso de falha de driver');
+  assert.ok(code.includes('Compensação de exposição não suportada'), 'Deve exibir feedback amigável ao usuário quando exposure compensation falhar');
 });

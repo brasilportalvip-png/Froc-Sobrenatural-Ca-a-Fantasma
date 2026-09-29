@@ -333,6 +333,7 @@ export interface ToolSession {
   autoRenewCount?: number;
   maxAutoRenewals?: number;
   lastRenewedAt?: number;
+  lastRenewedFromExpiresAt?: number;
   createdAt: number;
   endedAt?: number;
   requestId: string;

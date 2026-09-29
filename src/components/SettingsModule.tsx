@@ -23,7 +23,8 @@ interface Props {
   onClearAllData: () => Promise<void>;
   availableMics: MediaDeviceInfo[];
   selectedMicId: string;
-  onSelectMic: (deviceId: string) => void;
+  onSelectMic: (deviceId: string) => Promise<boolean>;
+  audioError?: string | null;
 }
 
 export const SettingsModule: React.FC<Props> = ({
@@ -34,6 +35,7 @@ export const SettingsModule: React.FC<Props> = ({
   availableMics,
   selectedMicId,
   onSelectMic,
+  audioError,
 }) => {
   const [stats, setStats] = useState<{ sessionCount: number; evidenceCount: number; approxBytes: number }>({
     sessionCount: 0,
@@ -42,6 +44,7 @@ export const SettingsModule: React.FC<Props> = ({
   });
 
   const [confirmWipe, setConfirmWipe] = useState(false);
+  const [isSwitchingMic, setIsSwitchingMic] = useState(false);
 
   useEffect(() => {
     getStorageStats().then(setStats);
@@ -98,17 +101,39 @@ export const SettingsModule: React.FC<Props> = ({
             </div>
 
             {availableMics.length > 0 ? (
-              <select
-                value={selectedMicId}
-                onChange={(e) => onSelectMic(e.target.value)}
-                className="w-full bg-slate-900 border border-slate-700 rounded px-2.5 py-1.5 text-xs font-mono text-cyan-200 focus:outline-none focus:border-cyan-400 cursor-pointer"
-              >
-                {availableMics.map((mic) => (
-                  <option key={mic.deviceId} value={mic.deviceId}>
-                    {mic.label || `Microfone (${mic.deviceId.slice(0, 8)})`}
-                  </option>
-                ))}
-              </select>
+              <div className="space-y-2">
+                <select
+                  value={selectedMicId}
+                  disabled={isSwitchingMic}
+                  onChange={async (e) => {
+                    const id = e.target.value;
+                    setIsSwitchingMic(true);
+                    try {
+                      await onSelectMic(id);
+                    } finally {
+                      setIsSwitchingMic(false);
+                    }
+                  }}
+                  className="w-full bg-slate-900 border border-slate-700 rounded px-2.5 py-1.5 text-xs font-mono text-cyan-200 focus:outline-none focus:border-cyan-400 cursor-pointer disabled:opacity-50"
+                >
+                  {availableMics.map((mic) => (
+                    <option key={mic.deviceId} value={mic.deviceId}>
+                      {mic.label || `Microfone (${mic.deviceId.slice(0, 8)})`}
+                    </option>
+                  ))}
+                </select>
+                {audioError && (
+                  <p className="text-[11px] text-rose-400 font-mono flex items-center gap-1">
+                    <AlertTriangle className="w-3 h-3 text-rose-400 shrink-0" />
+                    <span>{audioError}</span>
+                  </p>
+                )}
+                {isSwitchingMic && (
+                  <p className="text-[10px] text-cyan-400 font-mono animate-pulse">
+                    Alternando transdutor de áudio...
+                  </p>
+                )}
+              </div>
             ) : (
               <div className="flex justify-between items-center text-xs font-mono text-slate-400">
                 <span>Clique para solicitar permissão de áudio ao navegador.</span>

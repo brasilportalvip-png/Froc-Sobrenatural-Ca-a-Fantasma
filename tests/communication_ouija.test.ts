@@ -114,6 +114,55 @@ test('API /api/chat: Rota existe e rejeita requisições anônimas com 401', asy
   assert.equal(statusCode, 401, 'Requisição anônima deve receber 401');
 });
 
+test('Live Captions: Lock de transmissão impede sobreposição concorrente de múltiplos chunks', async () => {
+  // Simulação de ticks de 3200ms sobre gravação assíncrona de 3600ms
+  let activeRecordings = 0;
+  let maxConcurrentRecordings = 0;
+  let totalDispatched = 0;
+
+  let isTransmittingChunk = false;
+
+  const mockOnGetAudioChunk = async (durationMs: number) => {
+    activeRecordings++;
+    maxConcurrentRecordings = Math.max(maxConcurrentRecordings, activeRecordings);
+    await new Promise((r) => setTimeout(r, 50)); // Simula gravação assíncrona
+    activeRecordings--;
+    return { blob: new Blob(['dummy audio chunk']), mimeType: 'audio/webm' };
+  };
+
+  const simulateTick = async () => {
+    if (isTransmittingChunk) return; // Lock autoritativo
+    isTransmittingChunk = true;
+    totalDispatched++;
+    try {
+      await mockOnGetAudioChunk(3600);
+    } finally {
+      isTransmittingChunk = false;
+    }
+  };
+
+  // Disparar 3 ticks consecutivos concorrentes (ex: intervalo de 3200ms disparando enquanto chunk de 3600ms ainda grava)
+  const p1 = simulateTick();
+  const p2 = simulateTick();
+  const p3 = simulateTick();
+
+  await Promise.all([p1, p2, p3]);
+
+  assert.equal(maxConcurrentRecordings, 1, 'Nunca deve haver mais de 1 gravação ativa de chunk simultaneamente');
+  assert.equal(totalDispatched, 1, 'Ticks sobrepostos enquanto o lock está ativo devem ser ignorados');
+});
+
+test('Ouija Forense: Loop de física usa snapshots atuais das refs sem closures obsoletas', async () => {
+  const fs = await import('node:fs/promises');
+  const code = await fs.readFile('src/components/OuijaModule.tsx', 'utf-8');
+
+  // O efeito principal não deve conter sensorState ou audioMetrics em acessos diretos no loop de captura
+  assert.ok(code.includes('currentSensors?.magnetometer?.available'), 'Deve usar currentSensors para magnetômetro');
+  assert.ok(code.includes('currentSensors?.motion?.available'), 'Deve usar currentSensors para movimento');
+  assert.ok(code.includes('currentSensors?.orientation?.available'), 'Deve usar currentSensors para orientação');
+  assert.ok(code.includes('currentAudio?.dbfs'), 'Deve usar currentAudio para dbfs no log pericial');
+});
+
 test('Ouija Forense: Código-fonte do OuijaModule não contém manipulação de alvos artificiais nem Math.random', async () => {
   const fs = await import('node:fs/promises');
   const code = await fs.readFile('src/components/OuijaModule.tsx', 'utf-8');

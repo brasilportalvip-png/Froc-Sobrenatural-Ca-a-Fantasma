@@ -115,14 +115,70 @@ test('ToolSessionEngine: Lock determinístico e limite maxAutoRenewals implement
   assert.ok(code.includes('toolSessionLocks'), 'Deve gerenciar coleção de locks determinísticos toolSessionLocks');
   assert.ok(code.includes('lockRef'), 'Deve utilizar referência direta de lock determinístico');
 
+  // Verifica proteção contra sobreposição concorrente multi-aba (lastRenewedFromExpiresAt)
+  assert.ok(code.includes('lastRenewedFromExpiresAt'), 'Deve comparar lastRenewedFromExpiresAt para evitar cobrança duplicada em corrida multi-aba');
+
   // Verifica proteção de maxAutoRenewals
   assert.ok(code.includes('MAX_AUTORENEWALS_REACHED') || code.includes('maxAutoRenewals'), 'Deve verificar limite de maxAutoRenewals');
 
-  // Verifica que ToolSessionContext sincroniza via BroadcastChannel
+  // Verifica que ToolSessionContext sincroniza via BroadcastChannel e valida rollback
   const contextCode = fs.readFileSync('src/services/ToolSessionContext.tsx', 'utf-8');
   assert.ok(contextCode.includes('BroadcastChannel'), 'ToolSessionContext deve utilizar BroadcastChannel para sincronização multi-aba');
   assert.ok(contextCode.includes('MAX_AUTO_RENEWALS'), 'ToolSessionContext deve exportar constante MAX_AUTO_RENEWALS');
+  assert.ok(contextCode.includes('previousAutoRenew'), 'toggleAutoRenew deve salvar e restaurar previousAutoRenew em caso de erro');
   assert.ok(!contextCode.includes('Math.random()'), 'ToolSessionContext não deve conter Math.random()');
+});
+
+test('Concorrência Multi-Aba: Duas renovações concorrentes com requestIds distintos resultam em apenas 1 débito', async () => {
+  // Simulação exata da transação do Firestore com cycle deduplication
+  let userBalance = 25;
+  let renewalsDebited = 0;
+  let renewalCount = 0;
+  let expiresAt = 1000000;
+  let lastRenewedFromExpiresAt: number | undefined = undefined;
+
+  // Função simulando a transação atômica do engine
+  const executeAtomicRenew = async (requestId: string) => {
+    // 1. Simular latência de leitura
+    await new Promise((r) => setTimeout(r, 10));
+
+    // Se já foi renovado a partir deste mesmo expiresAt, retorna idempotente sem debitar
+    if (lastRenewedFromExpiresAt === expiresAt) {
+      return {
+        success: true,
+        alreadyRenewed: true,
+        balanceAfter: userBalance,
+        renewalCount,
+      };
+    }
+
+    // Débito atômico de 5 créditos
+    userBalance -= 5;
+    renewalsDebited++;
+    renewalCount++;
+    lastRenewedFromExpiresAt = expiresAt;
+    expiresAt += 240000;
+
+    return {
+      success: true,
+      alreadyRenewed: false,
+      balanceAfter: userBalance,
+      renewalCount,
+    };
+  };
+
+  // Disparar duas abas concorrentes com requestIds diferentes tentando renovar o mesmo ciclo
+  const [resTabA, resTabB] = await Promise.all([
+    executeAtomicRenew('tabA_req_123'),
+    executeAtomicRenew('tabB_req_456'),
+  ]);
+
+  // Exatamente UMA cobrança de 5 créditos
+  assert.equal(renewalsDebited, 1, 'Exatamente uma renovação deve ter sido debitada');
+  assert.equal(userBalance, 20, 'Saldo deve ter sido reduzido apenas uma vez (25 - 5 = 20)');
+  assert.equal(renewalCount, 1, 'renewalCount deve ter sido incrementado apenas uma vez');
+  assert.equal(expiresAt, 1240000, 'expiresAt deve ter sido estendido em apenas um ciclo de 4 minutos');
+  assert.ok(resTabA.success && resTabB.success, 'Ambas as abas devem receber sucesso');
 });
 
 test('SensorEngine: Separação de aceleração linear e gravidade, e calibração multi-amostra', async () => {

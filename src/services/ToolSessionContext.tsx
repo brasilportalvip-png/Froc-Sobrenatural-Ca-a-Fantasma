@@ -340,13 +340,15 @@ export const ToolSessionProvider: React.FC<{ children: React.ReactNode }> = ({ c
     [user, getIdToken, refreshWallet]
   );
 
-  // Alternar auto-renovação
+  // Alternar auto-renovação com rollback em caso de falha de rede ou HTTP não-200
   const toggleAutoRenew = useCallback(
     async (toolId: PremiumToolId, autoRenew: boolean): Promise<boolean> => {
       const currentSession = sessionsRef.current[toolId];
       if (!currentSession) return false;
 
-      // Otimista
+      const previousAutoRenew = currentSession.autoRenew;
+
+      // Atualização otimista
       setSessions((prev) => ({
         ...prev,
         [toolId]: prev[toolId] ? { ...prev[toolId]!, autoRenew } : null,
@@ -365,16 +367,39 @@ export const ToolSessionProvider: React.FC<{ children: React.ReactNode }> = ({ c
             autoRenew,
           }),
         });
-        return resp.ok;
+
+        if (resp.ok) {
+          const data = await resp.json().catch(() => null);
+          if (data && data.session) {
+            setSessions((prev) => ({
+              ...prev,
+              [toolId]: data.session,
+            }));
+          }
+          return true;
+        } else {
+          // Reverter estado local anterior em falhas HTTP
+          console.warn(`[ToolSessionContext] Falha no servidor ao alternar auto-renovação (${resp.status})`);
+          setSessions((prev) => ({
+            ...prev,
+            [toolId]: prev[toolId] ? { ...prev[toolId]!, autoRenew: previousAutoRenew } : null,
+          }));
+          return false;
+        }
       } catch (err) {
-        console.warn('[ToolSessionContext] Erro ao alternar auto-renovação:', err);
+        console.warn('[ToolSessionContext] Erro de rede ao alternar auto-renovação, revertendo:', err);
+        // Rollback do estado local
+        setSessions((prev) => ({
+          ...prev,
+          [toolId]: prev[toolId] ? { ...prev[toolId]!, autoRenew: previousAutoRenew } : null,
+        }));
         return false;
       }
     },
     [getIdToken]
   );
 
-  // Encerrar sessão
+  // Encerrar sessão: validação autoritativa do servidor antes de remover estado local
   const endSession = useCallback(
     async (toolId: PremiumToolId): Promise<boolean> => {
       const currentSession = sessionsRef.current[toolId];
@@ -382,15 +407,7 @@ export const ToolSessionProvider: React.FC<{ children: React.ReactNode }> = ({ c
 
       try {
         const token = await getIdToken();
-        setSessions((prev) => ({ ...prev, [toolId]: null }));
-        setRemainingSeconds((prev) => ({ ...prev, [toolId]: 0 }));
-
-        channelRef.current?.postMessage({
-          type: 'SESSION_ENDED',
-          toolId,
-        });
-
-        await fetch('/api/tools/session/end', {
+        const resp = await fetch('/api/tools/session/end', {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
@@ -398,9 +415,22 @@ export const ToolSessionProvider: React.FC<{ children: React.ReactNode }> = ({ c
           },
           body: JSON.stringify({ toolSessionId: currentSession.toolSessionId }),
         });
-        return true;
+
+        if (resp.ok) {
+          setSessions((prev) => ({ ...prev, [toolId]: null }));
+          setRemainingSeconds((prev) => ({ ...prev, [toolId]: 0 }));
+
+          channelRef.current?.postMessage({
+            type: 'SESSION_ENDED',
+            toolId,
+          });
+          return true;
+        } else {
+          console.warn(`[ToolSessionContext] Servidor rejeitou encerramento de sessão (${resp.status})`);
+          return false;
+        }
       } catch (err) {
-        console.warn('[ToolSessionContext] Erro ao encerrar sessão:', err);
+        console.warn('[ToolSessionContext] Erro de conexão ao encerrar sessão:', err);
         return false;
       }
     },

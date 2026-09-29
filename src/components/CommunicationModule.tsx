@@ -95,6 +95,7 @@ export const CommunicationModule: React.FC<Props> = ({
   const [liveCaptionStatus, setLiveCaptionStatus] = useState<LiveCaptionStatus>('listening');
   const [isLiveCaptionsActive, setIsLiveCaptionsActive] = useState(true);
   const [isTransmittingChunk, setIsTransmittingChunk] = useState(false);
+  const isTransmittingChunkRef = useRef(false);
   const [savedCaptionIds, setSavedCaptionIds] = useState<Record<string, boolean>>({});
   const rateLimiterRef = useRef<ChunkRateLimiter>({
     lastCallTimestamp: 0,
@@ -187,7 +188,8 @@ export const CommunicationModule: React.FC<Props> = ({
 
     let isDisposed = false;
     const vadInterval = setInterval(async () => {
-      if (isDisposed || isTransmittingChunk) return;
+      // Usar lock autoritativo local para impedir sobreposição entre ticks do timer de 3200ms e gravações de 3600ms
+      if (isDisposed || isTransmittingChunkRef.current) return;
 
       const currentMetrics = audioMetricsRef.current;
       const currentSensors = sensorStateRef.current;
@@ -210,10 +212,12 @@ export const CommunicationModule: React.FC<Props> = ({
 
       // Se temos motor de chunks, IA disponível e sessão ativa de comunicação
       if (onGetAudioChunk && hasGemini && isToolSessionActive) {
-        try {
-          setIsTransmittingChunk(true);
-          setLiveCaptionStatus('analyzing');
+        // Bloquear ANTES de disparar onGetAudioChunk
+        isTransmittingChunkRef.current = true;
+        setIsTransmittingChunk(true);
+        setLiveCaptionStatus('analyzing');
 
+        try {
           const chunk = await onGetAudioChunk(3600);
           if (isDisposed) return;
 
@@ -306,6 +310,7 @@ export const CommunicationModule: React.FC<Props> = ({
           console.warn('[LiveCaptions] Falha no processamento de chunk:', chunkErr);
           setLiveCaptionStatus('error');
         } finally {
+          isTransmittingChunkRef.current = false;
           setIsTransmittingChunk(false);
           setLiveCaptionStatus('listening');
         }
@@ -314,6 +319,7 @@ export const CommunicationModule: React.FC<Props> = ({
 
     return () => {
       isDisposed = true;
+      isTransmittingChunkRef.current = false;
       clearInterval(vadInterval);
     };
   }, [hasAudioPermission, isLiveCaptionsActive, hasGemini, isToolSessionActive, activeToolSessionId, onGetAudioChunk, getIdToken]);

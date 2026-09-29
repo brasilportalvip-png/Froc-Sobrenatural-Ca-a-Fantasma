@@ -255,8 +255,24 @@ export const VisionModule: React.FC<Props> = ({
       setCameraActive(true);
     } catch (err: any) {
       console.warn('Erro ao inicializar visualização da câmera:', err);
+      // Garantir liberação rigorosa do MediaStream e reset de tracks se video.play() ou qualquer etapa falhar
+      if (mediaStream) {
+        try {
+          mediaStream.getTracks().forEach((t) => t.stop());
+        } catch {}
+      }
+      if (streamRef.current) {
+        try {
+          streamRef.current.getTracks().forEach((t) => t.stop());
+        } catch {}
+        streamRef.current = null;
+      }
+      if (videoRef.current) {
+        videoRef.current.srcObject = null;
+      }
       setCameraError(err?.message || 'Falha ao iniciar renderização do vídeo.');
       setCameraActive(false);
+      setTorchActive(false);
     }
   };
 
@@ -303,6 +319,7 @@ export const VisionModule: React.FC<Props> = ({
 
   // Hardware Exposure Compensation Change
   const handleExposureChange = async (val: number) => {
+    const previousExposure = exposureValue;
     setExposureValue(val);
     if (!streamRef.current || !hasExposure) return;
     const track = streamRef.current.getVideoTracks()[0];
@@ -312,8 +329,10 @@ export const VisionModule: React.FC<Props> = ({
       await (track as any).applyConstraints({
         advanced: [{ exposureCompensation: val }],
       });
-    } catch (err) {
+    } catch (err: any) {
       console.warn('Falha ao aplicar compensação de exposição:', err);
+      setExposureValue(previousExposure);
+      setCameraError('Compensação de exposição não suportada ou bloqueada pelo driver do sensor.');
     }
   };
 

@@ -472,7 +472,7 @@ export const OuijaModule: React.FC<Props> = ({
 
       // Condições periciais estritas para início ou avanço de Dwell:
       // 1. Sensores de hardware físicos devem existir e estar transmitindo dados
-      const hasActiveHardware = !!(sensorState?.orientation?.available || sensorState?.motion?.available || sensorState?.magnetometer?.available);
+      const hasActiveHardware = !!(currentSensors?.orientation?.available || currentSensors?.motion?.available || currentSensors?.magnetometer?.available);
       // 2. Não pode estar em repouso absoluto na posição inicial padrão (50, 50)
       const hasValidTrajectory = hasDisplacedFromStartRef.current && cumulativeTravelRef.current > 5.0;
       // 3. Se acabou de capturar uma letra, não pode re-capturá-la parada no mesmo ponto
@@ -509,7 +509,7 @@ export const OuijaModule: React.FC<Props> = ({
           setFlashSymbol(capturedId);
 
           // Cálculo de estabilidade baseado estritamente na desaceleração real e dados físicos
-          const sensorDelta = (sensorState?.magnetometer.delta || 0) + (sensorState?.motion.delta || 0);
+          const sensorDelta = (currentSensors?.magnetometer?.delta || 0) + (currentSensors?.motion?.delta || 0);
           const stabilityScore = Math.min(
             95,
             Math.max(35, Math.round(85 - speed * 3.5 - sensorDelta * 4))
@@ -521,13 +521,13 @@ export const OuijaModule: React.FC<Props> = ({
             symbol: capturedId,
             dwellMs: dwellDurationMs,
             velocity: Number(speed.toFixed(1)),
-            emfMagnitude: sensorState?.magnetometer.available ? sensorState.magnetometer.magnitude : null,
-            emfDelta: sensorState?.magnetometer.available ? sensorState.magnetometer.delta : null,
-            motionMagnitude: sensorState?.motion.available ? sensorState.motion.magnitude : null,
-            tiltBeta: sensorState?.orientation?.available ? (sensorState.orientation.beta ?? null) : null,
-            tiltGamma: sensorState?.orientation?.available ? (sensorState.orientation.gamma ?? null) : null,
+            emfMagnitude: currentSensors?.magnetometer?.available ? currentSensors.magnetometer.magnitude : null,
+            emfDelta: currentSensors?.magnetometer?.available ? currentSensors.magnetometer.delta : null,
+            motionMagnitude: currentSensors?.motion?.available ? currentSensors.motion.magnitude : null,
+            tiltBeta: currentSensors?.orientation?.available ? (currentSensors.orientation.beta ?? null) : null,
+            tiltGamma: currentSensors?.orientation?.available ? (currentSensors.orientation.gamma ?? null) : null,
             audioRms: Number(audioRms.toFixed(4)),
-            audioDbfs: Number((audioMetrics?.dbfs || -100).toFixed(1)),
+            audioDbfs: Number((currentAudio?.dbfs || -100).toFixed(1)),
             stabilityScore,
           };
           setCaptureLogs((prev) => [newLog, ...prev.slice(0, 19)]);

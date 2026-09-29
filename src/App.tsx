@@ -365,9 +365,12 @@ export default function App() {
       if (now - lastTick >= INTERVAL_MS) {
         lastTick = now;
         const micActive = audioEngineRef.current?.isMicrophoneActive();
+        let currentMetrics: any = null;
+
+        // Chamar getMetrics() no máximo UMA vez por tick e reutilizar os dados
         if (micActive && audioEngineRef.current) {
-          const metrics = audioEngineRef.current.getMetrics();
-          setAudioMetrics(metrics);
+          currentMetrics = audioEngineRef.current.getMetrics();
+          setAudioMetrics(currentMetrics);
         }
 
         const sensors = sensorEngineRef.current?.getReadings();
@@ -385,10 +388,10 @@ export default function App() {
               ...sensors.orientation,
             },
             audioLevel: {
-              dbfs: micActive && audioEngineRef.current ? audioEngineRef.current.getMetrics().dbfs : -100,
-              rms: micActive && audioEngineRef.current ? audioEngineRef.current.getMetrics().rms : 0,
-              peakHz: micActive && audioEngineRef.current ? audioEngineRef.current.getMetrics().peakFrequencyHz : 0,
-              isSpeechBand: micActive && audioEngineRef.current ? audioEngineRef.current.getMetrics().isVoiceBand : false,
+              dbfs: currentMetrics ? currentMetrics.dbfs : -100,
+              rms: currentMetrics ? currentMetrics.rms : 0,
+              peakHz: currentMetrics ? currentMetrics.peakFrequencyHz : 0,
+              isSpeechBand: currentMetrics ? currentMetrics.isVoiceBand : false,
             },
           });
         }
@@ -434,6 +437,40 @@ export default function App() {
 
   const handleRequestMicPermission = async (): Promise<void> => {
     await requestMicPermission();
+  };
+
+  // Switch Microphone with robust error handling and state synchronization
+  const handleSelectMic = async (deviceId: string): Promise<boolean> => {
+    if (!audioEngineRef.current) return false;
+    const previousMicId = selectedMicId;
+    const res = await audioEngineRef.current.startMicrophone(deviceId);
+
+    if (res.success) {
+      setSelectedMicId(deviceId);
+      setHasAudioPermission(true);
+      setAudioError(null);
+
+      // Refresh devices to guarantee labels are updated
+      if (navigator.mediaDevices && navigator.mediaDevices.enumerateDevices) {
+        try {
+          const devices = await navigator.mediaDevices.enumerateDevices();
+          setAvailableMics(devices.filter((d) => d.kind === 'audioinput'));
+        } catch {}
+      }
+      return true;
+    } else {
+      setAudioError(res.error || 'Falha ao conectar ao microfone selecionado.');
+      setHasAudioPermission(audioEngineRef.current.isMicrophoneActive());
+      // Reverter se o dispositivo anterior for diferente e ainda viável
+      if (previousMicId && previousMicId !== deviceId) {
+        const fallbackRes = await audioEngineRef.current.startMicrophone(previousMicId);
+        if (fallbackRes.success) {
+          setSelectedMicId(previousMicId);
+          setHasAudioPermission(true);
+        }
+      }
+      return false;
+    }
   };
 
   // Start a New Session
@@ -1294,10 +1331,8 @@ export default function App() {
               onClearAllData={handleClearAllData}
               availableMics={availableMics}
               selectedMicId={selectedMicId}
-              onSelectMic={(id) => {
-                setSelectedMicId(id);
-                audioEngineRef.current?.startMicrophone(id);
-              }}
+              onSelectMic={handleSelectMic}
+              audioError={audioError}
             />
           )}
 
