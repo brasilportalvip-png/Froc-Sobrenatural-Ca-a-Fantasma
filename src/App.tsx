@@ -907,12 +907,12 @@ export default function App() {
   };
 
   return (
-    <div className="min-h-screen bg-[#05080f] text-slate-100 flex flex-col font-sans">
+    <div className="min-h-screen bg-[#05080f] text-slate-100 flex flex-col font-sans overflow-x-hidden w-full max-w-full">
       {/* Offline Connectivity Banner */}
       <OfflineIndicator />
 
       {/* Top Main Navigation Header */}
-      <header className="border-b border-cyan-950/80 bg-[#070d18]/90 backdrop-blur-md sticky top-0 z-40">
+      <header className="border-b border-cyan-950/80 bg-[#070d18]/90 backdrop-blur-md sticky top-0 z-40 w-full overflow-x-hidden">
         <div className="max-w-7xl mx-auto px-3 sm:px-4 py-2.5 flex justify-between items-center">
           {/* Brand & Identity */}
           <div className="flex items-center gap-3">
@@ -941,7 +941,7 @@ export default function App() {
           </div>
 
           {/* Quick Status Badges, Wallet, Auth & PWA Install */}
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-1.5 sm:gap-2">
             {activeSession && (
               <div className="hidden md:flex items-center gap-1.5 bg-emerald-950/60 border border-emerald-500/50 px-2 py-0.5 rounded text-[11px] font-mono text-emerald-300">
                 <span className="w-2 h-2 rounded-full bg-emerald-400 animate-ping" />
@@ -952,8 +952,9 @@ export default function App() {
             {/* Wallet Button */}
             <button
               onClick={() => setIsWalletModalOpen(true)}
-              className="flex items-center gap-1.5 bg-[#091528] hover:bg-[#0d1e38] border border-cyan-500/50 px-2.5 py-1 rounded text-xs font-mono text-cyan-300 cursor-pointer transition shadow"
+              className="flex items-center gap-1.5 bg-[#091528] hover:bg-[#0d1e38] border border-cyan-500/50 px-2 sm:px-2.5 py-1 rounded text-xs font-mono text-cyan-300 cursor-pointer transition shadow"
               title="Abrir Carteira & Créditos"
+              aria-label="Carteira e Créditos"
             >
               <Wallet className="w-3.5 h-3.5 text-cyan-400" />
               <span>{wallet ? wallet.balance : 0}</span>
@@ -966,7 +967,7 @@ export default function App() {
                 setActiveTab('painel');
                 window.history.pushState({}, '', '/painel');
               }}
-              className={`flex items-center gap-1.5 px-2.5 py-1 rounded text-xs font-mono border transition cursor-pointer ${
+              className={`flex items-center gap-1.5 px-2 sm:px-2.5 py-1 rounded text-xs font-mono border transition cursor-pointer ${
                 activeTab === 'painel'
                   ? 'bg-cyan-950 border-cyan-400 text-cyan-200 shadow'
                   : 'bg-slate-900 border-slate-700 text-slate-300 hover:border-cyan-500'
@@ -1020,10 +1021,12 @@ export default function App() {
             ) : (
               <button
                 onClick={() => setIsAuthModalOpen(true)}
-                className="flex items-center gap-1.5 bg-gradient-to-r from-cyan-900 to-blue-900 hover:from-cyan-800 hover:to-blue-800 border border-cyan-400/60 text-cyan-200 px-3 py-1 rounded text-xs font-mono font-bold cursor-pointer transition shadow"
+                className="flex items-center gap-1.5 bg-gradient-to-r from-cyan-900 to-blue-900 hover:from-cyan-800 hover:to-blue-800 border border-cyan-400/60 text-cyan-200 px-2 sm:px-3 py-1 rounded text-xs font-mono font-bold cursor-pointer transition shadow"
+                aria-label="Entrar ou Cadastrar"
               >
                 <User className="w-3.5 h-3.5 text-cyan-300" />
-                <span>Entrar / Cadastrar</span>
+                <span className="hidden sm:inline">Entrar / Cadastrar</span>
+                <span className="sm:hidden">Entrar</span>
               </button>
             )}
 
@@ -1032,7 +1035,7 @@ export default function App() {
         </div>
 
         {/* Modular Navigation Tabs Bar */}
-        <nav className="max-w-7xl mx-auto px-2 sm:px-4 flex gap-1 overflow-x-auto no-scrollbar border-t border-slate-900 pt-1">
+        <nav className="max-w-7xl mx-auto px-2 sm:px-4 flex gap-1 overflow-x-auto no-scrollbar border-t border-slate-900 pt-1 w-full max-w-full">
           {[
             { id: 'communication' as const, label: 'Comunicação', icon: Radio },
             { id: 'vision' as const, label: 'Visão', icon: Eye },

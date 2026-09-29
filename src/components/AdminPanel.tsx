@@ -215,26 +215,28 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onBackToApp, onOpenAuth 
     }
   };
 
+  const [confirmingAdj, setConfirmingAdj] = useState(false);
+
   const handleExecuteAdjustment = async () => {
     if (!targetUid.trim()) {
-      alert('Informe o UID do usuário alvo.');
+      setAdjError('Informe o UID do usuário alvo.');
       return;
     }
     if (!adjReason.trim()) {
-      alert('Informe o motivo formal do ajuste.');
+      setAdjError('Informe o motivo formal do ajuste.');
       return;
     }
     if (!adjAmount || adjAmount <= 0) {
-      alert('Quantidade deve ser um inteiro positivo.');
+      setAdjError('Quantidade deve ser um inteiro positivo.');
       return;
     }
 
-    const actionText = adjAction === 'grant' ? 'CONCEDER' : 'RETIRAR';
-    const confirmMessage = `Confirma ${actionText} ${adjAmount} créditos para o usuário ${targetUid}?\nMotivo: ${adjReason}\nChave de Idempotência: ${idempotencyKey}`;
-    if (!confirm(confirmMessage)) {
+    if (!confirmingAdj) {
+      setConfirmingAdj(true);
       return;
     }
 
+    setConfirmingAdj(false);
     setSubmittingAdj(true);
     setAdjError(null);
     setAdjReceipt(null);
@@ -466,7 +468,15 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onBackToApp, onOpenAuth 
                 </div>
                 <div className="flex items-center justify-between p-2.5 rounded bg-slate-900 border border-slate-800">
                   <span>Allowlist de Administradores</span>
-                  <span className="text-emerald-400 font-bold">● ADMIN_UIDS Configurado</span>
+                  <span
+                    className={
+                      overview?.apiHealth.adminConfigured
+                        ? 'text-emerald-400 font-bold'
+                        : 'text-amber-400 font-bold'
+                    }
+                  >
+                    {overview?.apiHealth.adminConfigured ? '● ADMIN_UIDS Configurado' : '○ Não configurado'}
+                  </span>
                 </div>
               </div>
             </div>
@@ -864,17 +874,41 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onBackToApp, onOpenAuth 
                 </div>
               )}
 
-              <button
-                onClick={handleExecuteAdjustment}
-                disabled={submittingAdj || !targetUid.trim() || !adjReason.trim()}
-                className={`w-full py-3 rounded-lg font-mono text-xs font-bold cursor-pointer transition shadow-lg ${
-                  submittingAdj || !targetUid.trim() || !adjReason.trim()
-                    ? 'bg-slate-800 text-slate-500 cursor-not-allowed border border-slate-700'
-                    : 'bg-gradient-to-r from-cyan-600 to-blue-600 hover:from-cyan-500 hover:to-blue-500 text-white'
-                }`}
-              >
-                {submittingAdj ? 'Gravando Operação em Transação...' : 'Confirmar e Gravar Ajuste'}
-              </button>
+              {confirmingAdj ? (
+                <div className="p-3 bg-amber-950/70 border border-amber-500/80 rounded-lg space-y-2 text-xs font-mono text-amber-200">
+                  <p className="font-bold">
+                    Atenção: Confirma {adjAction === 'grant' ? 'concessão de' : 'retirada de'} {adjAmount} créditos para o usuário "{targetUid}"?
+                  </p>
+                  <p className="text-[11px] text-slate-300">Motivo: {adjReason}</p>
+                  <div className="flex gap-2 pt-1">
+                    <button
+                      onClick={handleExecuteAdjustment}
+                      disabled={submittingAdj}
+                      className="flex-1 py-2 bg-amber-600 hover:bg-amber-500 text-black font-bold rounded cursor-pointer transition text-xs font-mono"
+                    >
+                      {submittingAdj ? 'Gravando...' : 'Sim, Executar Ajuste'}
+                    </button>
+                    <button
+                      onClick={() => setConfirmingAdj(false)}
+                      className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded cursor-pointer transition text-xs font-mono"
+                    >
+                      Cancelar
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <button
+                  onClick={handleExecuteAdjustment}
+                  disabled={submittingAdj || !targetUid.trim() || !adjReason.trim()}
+                  className={`w-full py-3 rounded-lg font-mono text-xs font-bold cursor-pointer transition shadow-lg ${
+                    submittingAdj || !targetUid.trim() || !adjReason.trim()
+                      ? 'bg-slate-800 text-slate-500 cursor-not-allowed border border-slate-700'
+                      : 'bg-gradient-to-r from-cyan-600 to-blue-600 hover:from-cyan-500 hover:to-blue-500 text-white'
+                  }`}
+                >
+                  {submittingAdj ? 'Gravando Operação em Transação...' : 'Confirmar e Gravar Ajuste'}
+                </button>
+              )}
             </div>
           </div>
 

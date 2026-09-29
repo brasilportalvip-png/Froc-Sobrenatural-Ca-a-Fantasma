@@ -21,6 +21,15 @@ export const AuthModal: React.FC<{ isOpen: boolean; onClose: () => void }> = ({
   const [loading, setLoading] = useState(false);
   const [feedback, setFeedback] = useState<{ message: string; isError: boolean } | null>(null);
 
+  React.useEffect(() => {
+    if (!isOpen) return;
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose();
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [isOpen, onClose]);
+
   if (!isOpen) return null;
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -72,12 +81,21 @@ export const AuthModal: React.FC<{ isOpen: boolean; onClose: () => void }> = ({
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4 animate-in fade-in duration-200">
-      <div className="w-full max-w-md bg-[#090f1a] border border-cyan-500/50 rounded-xl shadow-2xl p-5 text-slate-100 space-y-4">
+    <div
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="auth-modal-title"
+      onClick={onClose}
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4 animate-in fade-in duration-200"
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        className="w-full max-w-md bg-[#090f1a] border border-cyan-500/50 rounded-xl shadow-2xl p-5 text-slate-100 space-y-4"
+      >
         {/* Header */}
         <div className="flex justify-between items-start border-b border-slate-800 pb-3">
           <div>
-            <h2 className="text-base font-bold font-mono text-white uppercase tracking-wider flex items-center gap-2">
+            <h2 id="auth-modal-title" className="text-base font-bold font-mono text-white uppercase tracking-wider flex items-center gap-2">
               <User className="w-4 h-4 text-cyan-400" />
               <span>{user ? 'PERFIL DO INVESTIGADOR' : 'ACESSO AO SISTEMA'}</span>
             </h2>

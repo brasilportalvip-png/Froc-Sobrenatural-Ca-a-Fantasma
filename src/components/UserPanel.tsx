@@ -65,6 +65,8 @@ export const UserPanel: React.FC<UserPanelProps> = ({
     null
   );
   const [verificationSent, setVerificationSent] = useState(false);
+  const [verificationError, setVerificationError] = useState<string | null>(null);
+  const [confirmingLogout, setConfirmingLogout] = useState(false);
 
   // Carregar pedidos e sessões locais
   useEffect(() => {
@@ -128,11 +130,12 @@ export const UserPanel: React.FC<UserPanelProps> = ({
 
   const handleSendVerification = async () => {
     try {
+      setVerificationError(null);
       await sendVerificationEmail();
       setVerificationSent(true);
       setTimeout(() => setVerificationSent(false), 8000);
     } catch (err: any) {
-      alert(err.message || 'Erro ao enviar e-mail de verificação.');
+      setVerificationError(err.message || 'Erro ao enviar e-mail de verificação.');
     }
   };
 
@@ -322,6 +325,9 @@ export const UserPanel: React.FC<UserPanelProps> = ({
                   {verificationSent ? 'Link Reenviado!' : 'Reenviar E-mail'}
                 </button>
               </div>
+              {verificationError && (
+                <p className="text-[11px] text-rose-400 font-mono mt-2">{verificationError}</p>
+              )}
             </div>
           )}
 
@@ -753,18 +759,35 @@ export const UserPanel: React.FC<UserPanelProps> = ({
                 </button>
               )}
 
-              <button
-                onClick={async () => {
-                  if (confirm('Deseja realmente encerrar a sessão da sua conta?')) {
-                    await logoutUser();
-                    onBackToApp();
-                  }
-                }}
-                className="px-4 py-2 bg-rose-950/60 hover:bg-rose-900/80 border border-rose-500/50 text-rose-300 font-mono text-xs rounded cursor-pointer transition flex items-center gap-2"
-              >
-                <LogOut className="w-4 h-4" />
-                <span>Sair da Conta</span>
-              </button>
+              {confirmingLogout ? (
+                <div className="flex items-center gap-2 bg-rose-950/80 border border-rose-500/70 p-2 rounded-lg">
+                  <span className="text-xs font-mono text-rose-200">Confirmar saída da conta?</span>
+                  <button
+                    onClick={async () => {
+                      setConfirmingLogout(false);
+                      await logoutUser();
+                      onBackToApp();
+                    }}
+                    className="px-3 py-1 bg-rose-600 hover:bg-rose-500 text-white font-mono text-xs rounded cursor-pointer transition font-bold"
+                  >
+                    Sim, Sair
+                  </button>
+                  <button
+                    onClick={() => setConfirmingLogout(false)}
+                    className="px-3 py-1 bg-slate-800 hover:bg-slate-700 text-slate-300 font-mono text-xs rounded cursor-pointer transition"
+                  >
+                    Cancelar
+                  </button>
+                </div>
+              ) : (
+                <button
+                  onClick={() => setConfirmingLogout(true)}
+                  className="px-4 py-2 bg-rose-950/60 hover:bg-rose-900/80 border border-rose-500/50 text-rose-300 font-mono text-xs rounded cursor-pointer transition flex items-center gap-2"
+                >
+                  <LogOut className="w-4 h-4" />
+                  <span>Sair da Conta</span>
+                </button>
+              )}
             </div>
           </div>
         </div>

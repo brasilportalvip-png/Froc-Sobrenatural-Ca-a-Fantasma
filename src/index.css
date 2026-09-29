@@ -5,9 +5,12 @@
     color-scheme: dark;
   }
 
+  html,
   body {
     background-color: #05080f;
     color: #f1f5f9;
+    overflow-x: hidden;
+    max-width: 100vw;
   }
 }
 

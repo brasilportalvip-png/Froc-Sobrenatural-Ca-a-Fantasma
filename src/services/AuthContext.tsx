@@ -275,20 +275,20 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
 
     if (token) {
-      const syncRes = await syncUserProfileAuthoritative(cred.user, token);
-      if (!syncRes.persisted) {
-        console.error('[AuthContext] Falha na sincronização inicial do perfil Firestore:', syncRes.error);
-        throw new Error(
-          `Conta criada no Firebase Auth, porém ocorreu erro ao persistir o perfil: ${
-            syncRes.error || 'Falha de comunicação'
-          }. Faça login novamente para concluir a ativação.`
-        );
+      try {
+        const syncRes = await syncUserProfileAuthoritative(cred.user, token);
+        if (!syncRes.persisted) {
+          console.warn('[AuthContext] Aviso na sincronização inicial do perfil Firestore:', syncRes.error);
+          setProfileSyncError(syncRes.error || 'Sincronização pendente');
+        } else {
+          setProfile(syncRes.profile);
+          setProfilePersisted(true);
+          setProfileSyncError(null);
+        }
+      } catch (syncErr: any) {
+        console.warn('[AuthContext] Erro ao sincronizar perfil inicial:', syncErr);
+        setProfileSyncError(syncErr?.message || 'Sincronização pendente');
       }
-      setProfile(syncRes.profile);
-      setProfilePersisted(true);
-      setProfileSyncError(null);
-    } else {
-      throw new Error('Conta criada no Firebase Auth, mas não foi possível autenticar o token de perfil.');
     }
 
     // 3. Envia e-mail de verificação
