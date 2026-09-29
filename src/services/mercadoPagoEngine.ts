@@ -361,11 +361,31 @@ export async function processMercadoPagoWebhook(paymentId: string): Promise<{ su
       });
       return { success: true, message: 'Estorno conciliado na carteira.' };
     } else {
-      if (order.status === 'approved' || order.status === 'refunded') {
-        return { success: true, message: 'Estado final preservado.' };
+      // Preservar estados finais (approved, refunded, charged_back) contra notificações antigas fora de ordem
+      if (['approved', 'refunded', 'charged_back'].includes(order.status)) {
+        return { success: true, message: `Estado final (${order.status}) preservado contra notificação fora de ordem.` };
       }
-      t.update(orderRef, { status: status === 'rejected' ? 'declined' : 'pending' });
-      return { success: true, message: `Status do pedido atualizado para ${status}.` };
+
+      // Mapeamento explícito de estados do gateway
+      let newOrderStatus: 'pending' | 'in_process' | 'in_mediation' | 'rejected' | 'cancelled' = 'pending';
+      if (status === 'rejected') {
+        newOrderStatus = 'rejected';
+      } else if (status === 'cancelled') {
+        newOrderStatus = 'cancelled';
+      } else if (status === 'in_process') {
+        newOrderStatus = 'in_process';
+      } else if (status === 'in_mediation') {
+        newOrderStatus = 'in_mediation';
+      } else {
+        newOrderStatus = 'pending';
+      }
+
+      t.update(orderRef, {
+        status: newOrderStatus,
+        mercadoPagoPaymentId: paymentId,
+        updatedAt: Date.now(),
+      });
+      return { success: true, message: `Status do pedido atualizado para ${newOrderStatus}.` };
     }
   });
 }

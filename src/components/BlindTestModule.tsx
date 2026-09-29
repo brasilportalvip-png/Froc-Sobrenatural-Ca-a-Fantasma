@@ -177,7 +177,7 @@ export const BlindTestModule: React.FC<Props> = ({ activeSession, onLogEvidence 
               </h2>
             </div>
             <p className="text-xs text-slate-400 font-mono mt-0.5">
-              Isolamento criptográfico real de respostas de controle prévias à formulação da hipótese
+              Compromisso por hash SHA-256 e ocultação local de respostas prévias à formulação da hipótese
             </p>
           </div>
 
@@ -193,7 +193,7 @@ export const BlindTestModule: React.FC<Props> = ({ activeSession, onLogEvidence 
         {/* Rigor Explanation */}
         <div className="mt-3 p-2.5 rounded bg-[#080d17] border border-cyan-900/60 text-[11px] text-slate-300 font-sans leading-relaxed">
           <p>
-            <strong className="text-cyan-300 font-mono">COMO FUNCIONA O TESTE LOCAL:</strong> Um terceiro registra uma resposta e o aplicativo oculta o texto até a hipótese ser travada. Um hash SHA-256 registra um compromisso, mas a resposta também fica codificada de forma reversível neste aparelho. <strong className="text-amber-400">Quem tem acesso ao armazenamento do navegador pode consultá-la antes da revelação.</strong> Registre acertos e resultados negativos.
+            <strong className="text-cyan-300 font-mono">COMO FUNCIONA O TESTE LOCAL:</strong> Um terceiro registra uma resposta e o aplicativo oculta o texto até a hipótese ser travada. Um hash SHA-256 registra o compromisso de integridade, enquanto a resposta original permanece codificada de forma reversível neste aparelho. <strong className="text-amber-400">Quem tem acesso ao armazenamento do navegador pode consultá-la antes da revelação.</strong> Registre acertos e resultados negativos.
           </p>
         </div>
       </div>
@@ -242,7 +242,7 @@ export const BlindTestModule: React.FC<Props> = ({ activeSession, onLogEvidence 
                 className="w-full bg-[#050912] border border-slate-700 rounded px-3 py-2 text-xs text-white placeholder:text-slate-500 focus:outline-none focus:border-cyan-400 font-mono"
               />
               <span className="text-[10px] font-mono text-slate-500 mt-0.5 block">
-                Esta resposta será imediatamente convertida em hash SHA-256 e ficará bloqueada.
+                Esta resposta será associada a um compromisso hash SHA-256 com salt e mantida oculta localmente até a revelação.
               </span>
             </div>
 
@@ -272,7 +272,7 @@ export const BlindTestModule: React.FC<Props> = ({ activeSession, onLogEvidence 
                 className="px-4 py-1.5 bg-cyan-600 hover:bg-cyan-500 text-white rounded text-xs font-mono font-bold flex items-center gap-1.5 cursor-pointer"
               >
                 <Lock className="w-3.5 h-3.5" />
-                <span>Selar Criptograficamente</span>
+                <span>Selar com Hash SHA-256</span>
               </button>
             </div>
           </form>

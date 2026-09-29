@@ -9,6 +9,13 @@ interface Props {
 export const AudioOscilloscope: React.FC<Props> = ({ metrics, isRecording }) => {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
 
+  // Refs desacopladas para evitar cancelar/recriar o RAF 20 vezes por segundo
+  const metricsRef = useRef(metrics);
+  metricsRef.current = metrics;
+
+  const isRecordingRef = useRef(isRecording);
+  isRecordingRef.current = isRecording;
+
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
@@ -16,8 +23,14 @@ export const AudioOscilloscope: React.FC<Props> = ({ metrics, isRecording }) => 
     if (!ctx) return;
 
     let animId: number;
+    let isMounted = true;
 
     const render = () => {
+      if (!isMounted) return;
+
+      const curMetrics = metricsRef.current;
+      const rec = isRecordingRef.current;
+
       const width = canvas.width;
       const height = canvas.height;
 
@@ -42,30 +55,30 @@ export const AudioOscilloscope: React.FC<Props> = ({ metrics, isRecording }) => 
       }
 
       // Draw frequency spectrum bars (lower half or background)
-      if (metrics.frequencyData && metrics.frequencyData.length > 0) {
-        const barCount = Math.min(64, metrics.frequencyData.length / 4);
+      if (curMetrics.frequencyData && curMetrics.frequencyData.length > 0) {
+        const barCount = Math.min(64, curMetrics.frequencyData.length / 4);
         const barWidth = width / barCount;
         for (let i = 0; i < barCount; i++) {
-          const val = metrics.frequencyData[i * 2] / 255;
+          const val = curMetrics.frequencyData[i * 2] / 255;
           const barHeight = val * (height * 0.45);
-          ctx.fillStyle = isRecording ? 'rgba(0, 240, 255, 0.25)' : 'rgba(100, 116, 139, 0.15)';
+          ctx.fillStyle = rec ? 'rgba(0, 240, 255, 0.25)' : 'rgba(100, 116, 139, 0.15)';
           ctx.fillRect(i * barWidth, height - barHeight, barWidth - 1, barHeight);
         }
       }
 
       // Draw waveform oscilloscope line
-      if (metrics.timeData && metrics.timeData.length > 0) {
+      if (curMetrics.timeData && curMetrics.timeData.length > 0) {
         ctx.beginPath();
         ctx.lineWidth = 2;
-        ctx.strokeStyle = isRecording ? '#00ffb3' : '#38bdf8';
-        ctx.shadowColor = isRecording ? '#00ffb3' : '#38bdf8';
+        ctx.strokeStyle = rec ? '#00ffb3' : '#38bdf8';
+        ctx.shadowColor = rec ? '#00ffb3' : '#38bdf8';
         ctx.shadowBlur = 6;
 
-        const sliceWidth = width / metrics.timeData.length;
+        const sliceWidth = width / curMetrics.timeData.length;
         let x = 0;
 
-        for (let i = 0; i < metrics.timeData.length; i++) {
-          const v = metrics.timeData[i] / 128.0; // 0 to 2
+        for (let i = 0; i < curMetrics.timeData.length; i++) {
+          const v = curMetrics.timeData[i] / 128.0; // 0 to 2
           const y = (v * height) / 2;
 
           if (i === 0) {
@@ -92,12 +105,13 @@ export const AudioOscilloscope: React.FC<Props> = ({ metrics, isRecording }) => 
       animId = requestAnimationFrame(render);
     };
 
-    render();
+    animId = requestAnimationFrame(render);
 
     return () => {
+      isMounted = false;
       cancelAnimationFrame(animId);
     };
-  }, [metrics, isRecording]);
+  }, []);
 
   // dBFS calculation (-100 to 0)
   const dbfs = metrics.dbfs;

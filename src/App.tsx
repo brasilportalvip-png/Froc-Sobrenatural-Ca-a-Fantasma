@@ -103,7 +103,16 @@ export default function App() {
   // Audio Engine & Metrics
   const audioEngineRef = useRef<AudioEngine | null>(null);
   const [hasAudioPermission, setHasAudioPermission] = useState(false);
+  const [audioError, setAudioError] = useState<string | null>(null);
   const [isRecordingAudio, setIsRecordingAudio] = useState(false);
+
+  // Notificação de retorno do Checkout Mercado Pago
+  const [paymentNotice, setPaymentNotice] = useState<{
+    type: 'success' | 'pending' | 'error';
+    title: string;
+    message: string;
+  } | null>(null);
+
   const [audioMetrics, setAudioMetrics] = useState<AudioMetrics>({
     dbfs: -100,
     rms: 0,
@@ -264,6 +273,44 @@ export default function App() {
     audioEngineRef.current = new AudioEngine();
     sensorEngineRef.current = new SensorEngine();
 
+    // Tratar retorno do Checkout Mercado Pago (UX informativa e sem concessão espúria de crédito no cliente)
+    try {
+      const urlParams = new URLSearchParams(window.location.search);
+      const paymentStatus = urlParams.get('payment_status');
+      const orderId = urlParams.get('orderId');
+
+      if (paymentStatus) {
+        if (paymentStatus === 'success') {
+          setPaymentNotice({
+            type: 'success',
+            title: 'Retorno do Checkout Mercado Pago',
+            message: 'Transação recebida pelo processador. O backend está verificando e conciliando o pagamento de forma segura via webhook. Seus créditos serão liberados assim que a confirmação for registrada.',
+          });
+        } else if (paymentStatus === 'pending') {
+          setPaymentNotice({
+            type: 'pending',
+            title: 'Pagamento em Processamento',
+            message: 'Pagamento pendente no Mercado Pago (Pix/Boleto aguardando compensação). Seus créditos serão disponibilizados automaticamente após a confirmação.',
+          });
+        } else if (paymentStatus === 'failure') {
+          setPaymentNotice({
+            type: 'error',
+            title: 'Pagamento Cancelado ou Recusado',
+            message: 'A operação não foi concluída no checkout do Mercado Pago. Nenhum valor foi debitado.',
+          });
+        }
+
+        // Limpar parâmetros da URL de forma segura preservando a rota SPA
+        urlParams.delete('payment_status');
+        if (orderId) urlParams.delete('orderId');
+        const newQuery = urlParams.toString();
+        const cleanUrl = window.location.pathname + (newQuery ? `?${newQuery}` : '');
+        window.history.replaceState({}, '', cleanUrl);
+
+        refreshWallet();
+      }
+    } catch {}
+
     // Check backend server status
     fetch('/api/status')
       .then((res) => res.json())
@@ -317,32 +364,33 @@ export default function App() {
     const tick = (now: number) => {
       if (now - lastTick >= INTERVAL_MS) {
         lastTick = now;
-        if (audioEngineRef.current) {
+        const micActive = audioEngineRef.current?.isMicrophoneActive();
+        if (micActive && audioEngineRef.current) {
           const metrics = audioEngineRef.current.getMetrics();
           setAudioMetrics(metrics);
+        }
 
-          const sensors = sensorEngineRef.current?.getReadings();
-          if (sensors) {
-            setSensorState({
-              magnetometer: {
-                ...sensors.magnetometer,
-                unit: 'µT',
-              },
-              motion: {
-                ...sensors.motion,
-                unit: 'm/s²',
-              },
-              orientation: {
-                ...sensors.orientation,
-              },
-              audioLevel: {
-                dbfs: metrics.dbfs,
-                rms: metrics.rms,
-                peakHz: metrics.peakFrequencyHz,
-                isSpeechBand: metrics.isVoiceBand,
-              },
-            });
-          }
+        const sensors = sensorEngineRef.current?.getReadings();
+        if (sensors && (sensors.magnetometer.available || sensors.motion.available || sensors.orientation.available)) {
+          setSensorState({
+            magnetometer: {
+              ...sensors.magnetometer,
+              unit: 'µT',
+            },
+            motion: {
+              ...sensors.motion,
+              unit: 'm/s²',
+            },
+            orientation: {
+              ...sensors.orientation,
+            },
+            audioLevel: {
+              dbfs: micActive && audioEngineRef.current ? audioEngineRef.current.getMetrics().dbfs : -100,
+              rms: micActive && audioEngineRef.current ? audioEngineRef.current.getMetrics().rms : 0,
+              peakHz: micActive && audioEngineRef.current ? audioEngineRef.current.getMetrics().peakFrequencyHz : 0,
+              isSpeechBand: micActive && audioEngineRef.current ? audioEngineRef.current.getMetrics().isVoiceBand : false,
+            },
+          });
         }
       }
       animId = requestAnimationFrame(tick);
@@ -368,6 +416,11 @@ export default function App() {
     if (!audioEngineRef.current) return false;
     const res = await audioEngineRef.current.startMicrophone(selectedMicId);
     setHasAudioPermission(res.success);
+    if (!res.success) {
+      setAudioError(res.error || 'Falha ao acessar microfone.');
+    } else {
+      setAudioError(null);
+    }
 
     // Refresh devices list to get real labels
     if (res.success && navigator.mediaDevices && navigator.mediaDevices.enumerateDevices) {
@@ -910,6 +963,50 @@ export default function App() {
     <div className="min-h-screen bg-[#05080f] text-slate-100 flex flex-col font-sans overflow-x-hidden w-full max-w-full">
       {/* Offline Connectivity Banner */}
       <OfflineIndicator />
+
+      {/* Notificação informativa de retorno do Checkout Mercado Pago */}
+      {paymentNotice && (
+        <div
+          role="status"
+          className={`border-b px-4 py-2.5 text-xs font-mono flex items-center justify-between z-50 ${
+            paymentNotice.type === 'success'
+              ? 'bg-emerald-950/95 border-emerald-500/80 text-emerald-200'
+              : paymentNotice.type === 'pending'
+              ? 'bg-amber-950/95 border-amber-500/80 text-amber-200'
+              : 'bg-rose-950/95 border-rose-500/80 text-rose-200'
+          }`}
+        >
+          <div className="space-y-0.5 pr-4">
+            <strong className="block font-bold uppercase tracking-wider">{paymentNotice.title}</strong>
+            <p className="text-[11px] leading-relaxed">{paymentNotice.message}</p>
+          </div>
+          <button
+            onClick={() => {
+              refreshWallet();
+              setPaymentNotice(null);
+            }}
+            className="px-2.5 py-1 bg-black/40 hover:bg-black/60 border border-current rounded text-[11px] font-bold cursor-pointer transition shrink-0"
+          >
+            Entendido
+          </button>
+        </div>
+      )}
+
+      {/* Diagnóstico de Erro de Acesso ao Microfone */}
+      {audioError && (
+        <div
+          role="alert"
+          className="bg-rose-950/95 border-b border-rose-500/80 px-4 py-2.5 text-xs font-mono text-rose-200 flex items-center justify-between z-50"
+        >
+          <span className="leading-relaxed pr-4">{audioError}</span>
+          <button
+            onClick={() => setAudioError(null)}
+            className="px-2.5 py-1 bg-black/40 hover:bg-black/60 border border-rose-400 rounded text-[11px] font-bold cursor-pointer transition shrink-0"
+          >
+            Fechar
+          </button>
+        </div>
+      )}
 
       {/* Top Main Navigation Header */}
       <header className="border-b border-cyan-950/80 bg-[#070d18]/90 backdrop-blur-md sticky top-0 z-40 w-full overflow-x-hidden">

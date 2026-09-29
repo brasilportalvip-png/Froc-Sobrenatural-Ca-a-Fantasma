@@ -103,6 +103,16 @@ export class AudioEngine {
       }
 
       this.micStream = stream;
+
+      // Listener para quando o microfone for desconectado ou encerrado pelo sistema operacional
+      const audioTracks = stream.getAudioTracks();
+      audioTracks.forEach((track) => {
+        track.onended = () => {
+          console.warn('[AudioEngine] Track de áudio encerrada pelo sistema/hardware.');
+          this.stopMicrophone();
+        };
+      });
+
       const AudioCtxClass = window.AudioContext || (window as any).webkitAudioContext;
       this.audioCtx = new AudioCtxClass();
 
@@ -123,11 +133,33 @@ export class AudioEngine {
       return { success: true };
     } catch (err: any) {
       console.warn('Falha ao inicializar microfone:', err);
-      const msg = err?.name === 'NotAllowedError'
-        ? 'Permissão de microfone negada no navegador.'
-        : err?.name === 'NotFoundError'
-        ? 'Nenhum microfone físico encontrado no dispositivo.'
-        : err?.message || 'Falha ao acessar microfone.';
+      let msg = 'Falha ao acessar microfone.';
+      switch (err?.name) {
+        case 'NotAllowedError':
+        case 'PermissionDeniedError':
+          msg = 'Permissão de microfone negada no navegador. Habilite o acesso nas configurações do site ou dispositivo.';
+          break;
+        case 'NotFoundError':
+        case 'DevicesNotFoundError':
+          msg = 'Nenhum microfone físico ou transdutor de áudio encontrado no dispositivo.';
+          break;
+        case 'NotReadableError':
+        case 'TrackStartError':
+          msg = 'Microfone em uso por outro aplicativo ou erro de hardware do sistema operacional.';
+          break;
+        case 'OverconstrainedError':
+          msg = 'As configurações de áudio solicitadas não são suportadas pelo dispositivo atual.';
+          break;
+        case 'SecurityError':
+          msg = 'Acesso bloqueado por restrições de segurança de contexto (requer conexão segura HTTPS).';
+          break;
+        case 'AbortError':
+          msg = 'A solicitação de acesso ao microfone foi interrompida ou cancelada pelo sistema.';
+          break;
+        default:
+          msg = err?.message || 'Falha ao acessar microfone.';
+          break;
+      }
       this.lastErrorMessage = msg;
       return { success: false, error: msg };
     }

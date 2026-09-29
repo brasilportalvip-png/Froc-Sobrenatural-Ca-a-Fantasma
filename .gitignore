@@ -7,6 +7,12 @@ coverage/
 .env*
 !.env.example
 
+# Test and Playwright artifacts
+test-results/
+playwright-report/
+blob-report/
+playwright/.cache/
+
 # Chaves de credenciais e contas de serviço do Firebase / GCP
 *service-account*.json
 *service_account*.json

@@ -166,10 +166,13 @@ export class SensorEngine {
   public async requestMotionPermission(): Promise<boolean> {
     let anyGranted = false;
 
-    // DeviceMotionEvent on iOS 13+
-    if (typeof (DeviceMotionEvent as any)?.requestPermission === 'function') {
+    // DeviceMotionEvent on iOS 13+ com verificação defensiva contra ReferenceError
+    const hasDeviceMotion = typeof window !== 'undefined' && 'DeviceMotionEvent' in window;
+    const deviceMotionClass = hasDeviceMotion ? (window as any).DeviceMotionEvent : undefined;
+
+    if (deviceMotionClass && typeof deviceMotionClass.requestPermission === 'function') {
       try {
-        const response = await (DeviceMotionEvent as any).requestPermission();
+        const response = await deviceMotionClass.requestPermission();
         if (response === 'granted') {
           this.attachMotionListener();
           anyGranted = true;
@@ -179,15 +182,21 @@ export class SensorEngine {
       } catch (err: any) {
         this.currentReadings.motion.statusText = `Erro de permissão: ${err.message}`;
       }
-    } else {
+    } else if (hasDeviceMotion) {
       this.attachMotionListener();
       anyGranted = true;
+    } else {
+      this.currentReadings.motion.available = false;
+      this.currentReadings.motion.statusText = 'API de movimento não suportada neste ambiente';
     }
 
-    // DeviceOrientationEvent on iOS 13+
-    if (typeof (DeviceOrientationEvent as any)?.requestPermission === 'function') {
+    // DeviceOrientationEvent on iOS 13+ com verificação defensiva contra ReferenceError
+    const hasDeviceOrientation = typeof window !== 'undefined' && 'DeviceOrientationEvent' in window;
+    const deviceOrientationClass = hasDeviceOrientation ? (window as any).DeviceOrientationEvent : undefined;
+
+    if (deviceOrientationClass && typeof deviceOrientationClass.requestPermission === 'function') {
       try {
-        const response = await (DeviceOrientationEvent as any).requestPermission();
+        const response = await deviceOrientationClass.requestPermission();
         if (response === 'granted') {
           this.attachOrientationListener();
           anyGranted = true;
@@ -197,9 +206,12 @@ export class SensorEngine {
       } catch (err: any) {
         this.currentReadings.orientation.statusText = `Erro de permissão: ${err.message}`;
       }
-    } else {
+    } else if (hasDeviceOrientation) {
       this.attachOrientationListener();
       anyGranted = true;
+    } else {
+      this.currentReadings.orientation.available = false;
+      this.currentReadings.orientation.statusText = 'API de orientação não suportada neste ambiente';
     }
 
     return anyGranted;

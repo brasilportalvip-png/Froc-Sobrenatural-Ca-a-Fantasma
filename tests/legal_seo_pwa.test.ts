@@ -30,11 +30,24 @@ test('Segurança Firestore Rules - Verificação estática da regra de usuários
   assert.ok(matchWallets[1].includes('allow write: if false;'), 'Carteira não pode sofrer escrita cliente');
 });
 
-test('Reconciliação Automática de Reservas Órfãs - Reconcile function executa sem quebras', async () => {
+test('Reconciliação Automática de Reservas Órfãs - Reconcile function executa sem quebras e com isolamento', async () => {
   const dummyUid = 'test_reconcile_' + Date.now();
   const res = await reconcileStaleReservations(dummyUid);
   assert.ok(typeof res.reconciledCount === 'number', 'Deve retornar contagem numérica de estornos');
   assert.equal(res.reconciledCount, 0, 'Não deve estornar nada para UID sem consultas presas');
+
+  // Isolamento com db simulada para validar lógica sem depender de Google Cloud ADC
+  const mockDb = {
+    collection: () => ({
+      where: () => ({
+        limit: () => ({
+          get: async () => ({ docs: [] }),
+        }),
+      }),
+    }),
+  };
+  const mockRes = await reconcileStaleReservations(dummyUid, mockDb);
+  assert.equal(mockRes.reconciledCount, 0, 'Consulta simulada vazia retorna 0 reconciliações');
 });
 
 test('SEO & PWA - Arquivos estáticos essenciais presentes e configurados', () => {

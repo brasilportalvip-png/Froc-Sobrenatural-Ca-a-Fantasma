@@ -299,6 +299,13 @@ export const OuijaModule: React.FC<Props> = ({
   const lastCapturedSymbolRef = useRef<string | null>(null);
   const leftLastCaptureRadiusRef = useRef<boolean>(true);
 
+  // Refs desacopladas para leituras de alta frequência (50ms) evitando recriar o loop a cada frame
+  const sensorStateRef = useRef(sensorState);
+  sensorStateRef.current = sensorState;
+
+  const audioMetricsRef = useRef(audioMetrics);
+  audioMetricsRef.current = audioMetrics;
+
   // Motor de física 100% determinístico e baseado exclusivamente em sensores reais
   useEffect(() => {
     if (ouijaMode !== 'automatic' || !isAutoScanning) {
@@ -306,23 +313,29 @@ export const OuijaModule: React.FC<Props> = ({
     }
 
     let animId: number;
+    let isDisposed = false;
     let lastFrameTime = performance.now();
 
     const tick = (nowTime: number) => {
+      if (isDisposed) return;
+
       const dt = Math.min(0.05, Math.max(0.01, (nowTime - lastFrameTime) / 1000));
       lastFrameTime = nowTime;
 
       const currentPos = posRef.current;
       const currentVel = velRef.current;
 
+      const currentSensors = sensorStateRef.current;
+      const currentAudio = audioMetricsRef.current;
+
       // 1. Extração de forças de sensores físicos autênticos (SEM valores fabricados)
       let ax = 0;
       let ay = 0;
 
       // A) Inclinação / Orientação física (Giroscópio / DeviceOrientationEvent)
-      if (sensorState?.orientation?.available) {
-        const deltaGamma = sensorState.orientation.deltaGamma ?? 0;
-        const deltaBeta = sensorState.orientation.deltaBeta ?? 0;
+      if (currentSensors?.orientation?.available) {
+        const deltaGamma = currentSensors.orientation.deltaGamma ?? 0;
+        const deltaBeta = currentSensors.orientation.deltaBeta ?? 0;
         // Zona morta de 0.4° para filtrar ruído térmico do silício
         if (Math.abs(deltaGamma) > 0.4) {
           ax += deltaGamma * 1.5;
@@ -333,9 +346,9 @@ export const OuijaModule: React.FC<Props> = ({
       }
 
       // B) Aceleração física triaxial (Acelerômetro / DeviceMotionEvent)
-      if (sensorState?.motion.available) {
-        const mx = sensorState.motion.x;
-        const my = sensorState.motion.y;
+      if (currentSensors?.motion.available) {
+        const mx = currentSensors.motion.x;
+        const my = currentSensors.motion.y;
         // Zona morta de 0.15 m/s²
         if (Math.abs(mx) > 0.15) {
           ax += mx * 3.0;
@@ -346,10 +359,10 @@ export const OuijaModule: React.FC<Props> = ({
       }
 
       // C) Variação de Campo Eletromagnético (Magnetômetro W3C Sensor API)
-      if (sensorState?.magnetometer.available && sensorState.magnetometer.delta > 0.3) {
-        const magDelta = sensorState.magnetometer.delta;
-        const mx = sensorState.magnetometer.x;
-        const my = sensorState.magnetometer.y;
+      if (currentSensors?.magnetometer.available && currentSensors.magnetometer.delta > 0.3) {
+        const magDelta = currentSensors.magnetometer.delta;
+        const mx = currentSensors.magnetometer.x;
+        const my = currentSensors.magnetometer.y;
         const mNorm = Math.sqrt(mx * mx + my * my);
         if (mNorm > 0.1) {
           ax += (mx / mNorm) * Math.min(6, magDelta * 0.8);
@@ -358,7 +371,7 @@ export const OuijaModule: React.FC<Props> = ({
       }
 
       // D) Vibração Acústica Real do Microfone (Sensibilidade Mecânica do Transdutor)
-      const audioRms = audioMetrics?.rms || 0;
+      const audioRms = currentAudio?.rms || 0;
       if (audioRms > 0.02) {
         const acousticBoost = 1.0 + Math.min(2.5, audioRms * 12);
         ax *= acousticBoost;
@@ -551,8 +564,11 @@ export const OuijaModule: React.FC<Props> = ({
     };
 
     animId = requestAnimationFrame(tick);
-    return () => cancelAnimationFrame(animId);
-  }, [ouijaMode, isAutoScanning, dwellDurationMs, sensorState, audioMetrics]);
+    return () => {
+      isDisposed = true;
+      cancelAnimationFrame(animId);
+    };
+  }, [ouijaMode, isAutoScanning, dwellDurationMs]);
 
   // Pointer drag events para Modo Digital Ideomotor Manual
   const handlePointerDown = (e: React.PointerEvent) => {

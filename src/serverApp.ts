@@ -144,20 +144,37 @@ export function handleDbError(err: any, res: Response, fallbackMessage: string) 
 app.get('/api/status', (_req: Request, res: Response) => {
   const firebaseReady = isFirebaseAdminConfigured();
   const geminiReady = !!apiKey && !!ai;
-  const mpReady = !!process.env.MERCADO_PAGO_ACCESS_TOKEN;
+  const mpTokenReady = !!process.env.MERCADO_PAGO_ACCESS_TOKEN;
+  const mpWebhookReady = !!process.env.MERCADO_PAGO_WEBHOOK_SECRET;
+  const mpReady = mpTokenReady && mpWebhookReady;
 
-  // Status global honesto: 'ready' se os serviços centrais estiverem operacionais
+  const appUrl = process.env.APP_URL;
+  const appUrlValid = typeof appUrl === 'string' && appUrl.startsWith('https://');
+
+  const p50 = parseInt(process.env.PACKAGE_50_PRICE_CENTS || '0', 10);
+  const p75 = parseInt(process.env.PACKAGE_75_PRICE_CENTS || '0', 10);
+  const p100 = parseInt(process.env.PACKAGE_100_PRICE_CENTS || '0', 10);
+  const catalogConfigured = p50 > 0 || p75 > 0 || p100 > 0;
+
+  // Status global: 'online' se os serviços centrais estiverem operacionais
   const isReady = firebaseReady && geminiReady;
 
   res.json({
-    status: isReady ? 'ready' : 'degraded',
+    status: isReady ? 'online' : 'degraded',
     service: 'froc-sobrenatural-api',
     version: '1.0.0',
     timestamp: new Date().toISOString(),
     services: {
       geminiAi: geminiReady ? 'operational' : 'unavailable',
       firestoreAdmin: firebaseReady ? 'operational' : 'unauthenticated',
-      mercadoPago: mpReady ? 'operational' : 'unconfigured',
+      mercadoPago: mpReady ? 'operational' : mpTokenReady ? 'missing_webhook_secret' : 'unconfigured',
+      catalogPricing: catalogConfigured ? 'configured' : 'unconfigured',
+      appUrl: appUrlValid ? 'valid' : 'invalid_or_missing',
+    },
+    diagnostics: {
+      catalogConfigured,
+      mercadoPagoConfigured: mpReady,
+      appUrlConfigured: appUrlValid,
     },
     features: {
       audioAnalysis: true, // Disponível via Gemini AI ou Motor Espectral Local (DSP)
@@ -167,7 +184,7 @@ app.get('/api/status', (_req: Request, res: Response) => {
       evidenceLogging: true,
       walletAndCredits: firebaseReady,
       toolTimedSessions: firebaseReady,
-      mercadoPagoCheckoutPro: mpReady,
+      mercadoPagoCheckoutPro: mpReady && catalogConfigured && appUrlValid,
     },
   });
 });

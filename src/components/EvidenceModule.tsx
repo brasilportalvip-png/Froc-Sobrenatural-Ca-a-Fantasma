@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { Session, EvidenceItem } from '../types';
 import { getAudioBlob } from '../services/storage';
 import { AudioEngine } from '../services/audioEngine';
@@ -73,13 +73,18 @@ export const EvidenceModule: React.FC<Props> = ({
     }
   }, [highlightedEvidenceId, evidenceList]);
 
-  // Load audio files when selected item changes
+  // Load audio files when selected item changes with proper URL tracking and cleanup
+  const rawAudioUrlRef = useRef<string | null>(null);
+  const treatedAudioUrlRef = useRef<string | null>(null);
+
   useEffect(() => {
     let active = true;
 
     // Clean up previous URLs
-    if (rawAudioUrl) URL.revokeObjectURL(rawAudioUrl);
-    if (treatedAudioUrl) URL.revokeObjectURL(treatedAudioUrl);
+    if (rawAudioUrlRef.current) URL.revokeObjectURL(rawAudioUrlRef.current);
+    if (treatedAudioUrlRef.current) URL.revokeObjectURL(treatedAudioUrlRef.current);
+    rawAudioUrlRef.current = null;
+    treatedAudioUrlRef.current = null;
     setRawAudioUrl(null);
     setTreatedAudioUrl(null);
     setIsPlayingRaw(false);
@@ -89,6 +94,7 @@ export const EvidenceModule: React.FC<Props> = ({
       getAudioBlob(selectedItem.audioId).then(async (blob) => {
         if (!active || !blob) return;
         const rawUrl = URL.createObjectURL(blob);
+        rawAudioUrlRef.current = rawUrl;
         setRawAudioUrl(rawUrl);
 
         // Prepare treated copy (Bandpass 300Hz-3400Hz)
@@ -98,8 +104,11 @@ export const EvidenceModule: React.FC<Props> = ({
           if (treatedBuffer && active) {
             const treatedBlob = AudioEngine.audioBufferToWavBlob(treatedBuffer);
             const tUrl = URL.createObjectURL(treatedBlob);
+            treatedAudioUrlRef.current = tUrl;
             setTreatedAudioUrl(tUrl);
           }
+        } catch (filterErr) {
+          console.warn('[EvidenceModule] Falha ao aplicar filtro DSP:', filterErr);
         } finally {
           if (active) setIsProcessingFilter(false);
         }
@@ -108,10 +117,24 @@ export const EvidenceModule: React.FC<Props> = ({
 
     return () => {
       active = false;
+      if (rawAudioUrlRef.current) {
+        URL.revokeObjectURL(rawAudioUrlRef.current);
+        rawAudioUrlRef.current = null;
+      }
+      if (treatedAudioUrlRef.current) {
+        URL.revokeObjectURL(treatedAudioUrlRef.current);
+        treatedAudioUrlRef.current = null;
+      }
+      if (rawAudioRef.current) {
+        rawAudioRef.current.pause();
+      }
+      if (treatedAudioRef.current) {
+        treatedAudioRef.current.pause();
+      }
     };
   }, [selectedItem]);
 
-  const togglePlayRaw = () => {
+  const togglePlayRaw = async () => {
     if (!rawAudioRef.current) return;
     if (isPlayingRaw) {
       rawAudioRef.current.pause();
@@ -121,12 +144,17 @@ export const EvidenceModule: React.FC<Props> = ({
         treatedAudioRef.current.pause();
         setIsPlayingTreated(false);
       }
-      rawAudioRef.current.play();
-      setIsPlayingRaw(true);
+      try {
+        await rawAudioRef.current.play();
+        setIsPlayingRaw(true);
+      } catch (playErr) {
+        console.warn('[EvidenceModule] Falha ao reproduzir áudio bruto:', playErr);
+        setIsPlayingRaw(false);
+      }
     }
   };
 
-  const togglePlayTreated = () => {
+  const togglePlayTreated = async () => {
     if (!treatedAudioRef.current) return;
     if (isPlayingTreated) {
       treatedAudioRef.current.pause();
@@ -136,8 +164,13 @@ export const EvidenceModule: React.FC<Props> = ({
         rawAudioRef.current.pause();
         setIsPlayingRaw(false);
       }
-      treatedAudioRef.current.play();
-      setIsPlayingTreated(true);
+      try {
+        await treatedAudioRef.current.play();
+        setIsPlayingTreated(true);
+      } catch (playErr) {
+        console.warn('[EvidenceModule] Falha ao reproduzir áudio tratado:', playErr);
+        setIsPlayingTreated(false);
+      }
     }
   };
 

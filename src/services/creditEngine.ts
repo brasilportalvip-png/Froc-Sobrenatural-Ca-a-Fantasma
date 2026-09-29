@@ -1,4 +1,4 @@
-import { adminDb } from './firebaseAdmin';
+import { adminDb, isFirebaseAdminConfigured } from './firebaseAdmin';
 import { UserWallet, LedgerEntry } from '../types';
 
 /**
@@ -365,17 +365,24 @@ export async function releaseConsultationCredits(uid: string, requestId: string,
  * Reconciliação em lote ou individual de reservas órfãs presas (TTL expirado sem commit).
  * Libera os 5 créditos de volta para a carteira caso o processo tenha falhado silenciosamente.
  */
-export async function reconcileStaleReservations(targetUid?: string): Promise<{ reconciledCount: number }> {
+export async function reconcileStaleReservations(targetUid?: string, customDb?: any): Promise<{ reconciledCount: number }> {
+  const db = customDb || adminDb;
+  // Se o Firebase Admin não estiver configurado com credenciais válidas e não estiver em emulador,
+  // evita chamadas gRPC ao vivo que disparam unhandledRejection por falta de ADC em runners de CI
+  if (db === adminDb && !isFirebaseAdminConfigured() && !process.env.FIRESTORE_EMULATOR_HOST) {
+    return { reconciledCount: 0 };
+  }
+
   const STALE_THRESHOLD_MS = 5 * 60 * 1000; // 5 minutos
   const cutoff = Date.now() - STALE_THRESHOLD_MS;
 
   // Consulta sem índice composto: filtrar status e filtrar createdAt em memória
-  let query: any = adminDb.collection('consultations')
+  let query: any = db.collection('consultations')
     .where('status', '==', 'reserved')
     .limit(50);
 
   if (targetUid) {
-    query = adminDb.collection('consultations')
+    query = db.collection('consultations')
       .where('uid', '==', targetUid)
       .limit(30);
   }

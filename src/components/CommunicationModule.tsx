@@ -168,6 +168,16 @@ export const CommunicationModule: React.FC<Props> = ({
     }
   }, []);
 
+  // Refs para dados de alta frequência (50ms) evitando desmontar/recriar o setInterval de 3200ms continuamente
+  const audioMetricsRef = useRef(audioMetrics);
+  audioMetricsRef.current = audioMetrics;
+
+  const sensorStateRef = useRef(sensorState);
+  sensorStateRef.current = sensorState;
+
+  const activeSessionRef = useRef(activeSession);
+  activeSessionRef.current = activeSession;
+
   // Monitoramento contínuo de fala (VAD + Envio Seletivo para IA)
   useEffect(() => {
     if (!hasAudioPermission || !isLiveCaptionsActive) {
@@ -179,7 +189,11 @@ export const CommunicationModule: React.FC<Props> = ({
     const vadInterval = setInterval(async () => {
       if (isDisposed || isTransmittingChunk) return;
 
-      const vadResult = LiveCaptionsEngine.evaluateVad(audioMetrics);
+      const currentMetrics = audioMetricsRef.current;
+      const currentSensors = sensorStateRef.current;
+      const currentSession = activeSessionRef.current;
+
+      const vadResult = LiveCaptionsEngine.evaluateVad(currentMetrics);
 
       if (!vadResult.isVoiceCandidate) {
         setLiveCaptionStatus('no_speech');
@@ -189,7 +203,7 @@ export const CommunicationModule: React.FC<Props> = ({
       setLiveCaptionStatus('possible_speech');
 
       // Verificar se atende ao limite de requisições e cooldown
-      const check = LiveCaptionsEngine.canDispatchToAi(rateLimiterRef.current, audioMetrics);
+      const check = LiveCaptionsEngine.canDispatchToAi(rateLimiterRef.current, currentMetrics);
       if (!check.allowed) {
         return;
       }
@@ -204,15 +218,16 @@ export const CommunicationModule: React.FC<Props> = ({
           if (isDisposed) return;
 
           if (chunk && chunk.blob.size > 2000) {
-            LiveCaptionsEngine.recordAiCall(rateLimiterRef.current, audioMetrics);
+            LiveCaptionsEngine.recordAiCall(rateLimiterRef.current, currentMetrics);
             const token = await getIdToken();
             const secureSuffix = typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID().slice(0, 8) : Date.now().toString(36);
             const persistentReqId = `chunk_${activeToolSessionId || 'comm'}_${Date.now()}_${secureSuffix}`;
+            // Preserva o Data URL canônico completo (data:audio/<mime>;base64,<dados>) exigido pelo backend
             const base64Audio = await new Promise<string>((res) => {
               const reader = new FileReader();
               reader.onloadend = () => {
-                const b64 = (reader.result as string)?.split(',')[1] || '';
-                res(b64);
+                const dataUrl = (reader.result as string) || '';
+                res(dataUrl);
               };
               reader.readAsDataURL(chunk.blob);
             });
@@ -231,14 +246,14 @@ export const CommunicationModule: React.FC<Props> = ({
                 mimeType: chunk.mimeType,
                 toolSessionId: activeToolSessionId,
                 audioMetrics: {
-                  dbfs: audioMetrics.dbfs,
-                  peakFrequencyHz: audioMetrics.peakFrequencyHz,
-                  rms: audioMetrics.rms,
-                  isVoiceBand: audioMetrics.isVoiceBand,
+                  dbfs: currentMetrics.dbfs,
+                  peakFrequencyHz: currentMetrics.peakFrequencyHz,
+                  rms: currentMetrics.rms,
+                  isVoiceBand: currentMetrics.isVoiceBand,
                 },
                 sensorContext: {
-                  magnetometer: sensorState.magnetometer,
-                  motion: sensorState.motion,
+                  magnetometer: currentSensors.magnetometer,
+                  motion: currentSensors.motion,
                 },
               }),
             });
@@ -246,7 +261,7 @@ export const CommunicationModule: React.FC<Props> = ({
             if (resp.ok) {
               const data = await resp.json();
               const now = Date.now();
-              const elapsedSec = activeSession ? Math.max(0, Math.floor((now - activeSession.startTime) / 1000)) : 0;
+              const elapsedSec = currentSession ? Math.max(0, Math.floor((now - currentSession.startTime) / 1000)) : 0;
               const mins = String(Math.floor(elapsedSec / 60)).padStart(2, '0');
               const secs = String(elapsedSec % 60).padStart(2, '0');
               const timeFormatted = `${mins}:${secs}`;
@@ -274,12 +289,12 @@ export const CommunicationModule: React.FC<Props> = ({
                 text: displayText,
                 candidateTranscription: candidate,
                 confidence: conf,
-                dbfs: audioMetrics.dbfs,
-                peakFrequencyHz: audioMetrics.peakFrequencyHz,
+                dbfs: currentMetrics.dbfs,
+                peakFrequencyHz: currentMetrics.peakFrequencyHz,
                 provider: data.provider || 'Gemini 3.8 Flash',
                 executionTimeMs: data.executionTimeMs,
                 toolSessionId: activeToolSessionId,
-                isRelevant: !!candidate || conf >= 0.25 || audioMetrics.isVoiceBand,
+                isRelevant: !!candidate || conf >= 0.25 || currentMetrics.isVoiceBand,
                 audioBlob: chunk.blob,
                 alternativeHypotheses: data.alternativeHypotheses,
               };
@@ -301,7 +316,7 @@ export const CommunicationModule: React.FC<Props> = ({
       isDisposed = true;
       clearInterval(vadInterval);
     };
-  }, [hasAudioPermission, isLiveCaptionsActive, hasGemini, isToolSessionActive, activeToolSessionId, audioMetrics, activeSession, sensorState, onGetAudioChunk, getIdToken]);
+  }, [hasAudioPermission, isLiveCaptionsActive, hasGemini, isToolSessionActive, activeToolSessionId, onGetAudioChunk, getIdToken]);
 
   const toggleSpeechRecognition = () => {
     if (!speechRecognitionInstance) return;

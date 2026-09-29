@@ -172,25 +172,74 @@ export const VisionModule: React.FC<Props> = ({
     }
   };
 
-  // Start Camera with Requested Facing Mode
+  // Start Camera with Requested Facing Mode & Progressive Fallback
   const startCamera = async (mode: 'environment' | 'user' = facingMode) => {
     stopCamera();
     setCameraError(null);
+
+    let mediaStream: MediaStream | null = null;
+
+    // 1. Constraints preferenciais com resolução HD e facingMode
     try {
-      const constraints: MediaStreamConstraints = {
+      mediaStream = await navigator.mediaDevices.getUserMedia({
         video: {
           facingMode: mode,
           width: { ideal: 1280, min: 640 },
           height: { ideal: 720, min: 480 },
         },
         audio: false,
-      };
+      });
+    } catch (prefErr: any) {
+      console.warn('[VisionModule] Constraints preferenciais indisponíveis, tentando modo simples:', prefErr?.message);
+      // 2. Constraints intermediárias (apenas facingMode sem limites restritivos de resolução)
+      try {
+        mediaStream = await navigator.mediaDevices.getUserMedia({
+          video: { facingMode: mode },
+          audio: false,
+        });
+      } catch (simpleErr: any) {
+        console.warn('[VisionModule] Constraints simples com facingMode falharam, tentando fallback universal:', simpleErr?.message);
+        // 3. Fallback universal garantido (video: true)
+        try {
+          mediaStream = await navigator.mediaDevices.getUserMedia({
+            video: true,
+            audio: false,
+          });
+        } catch (fatalErr: any) {
+          console.warn('[VisionModule] Falha total ao acessar hardware de vídeo:', fatalErr);
+          const msg = fatalErr?.name === 'NotAllowedError'
+            ? 'Permissão de câmera negada no navegador. Habilite o acesso nas configurações do dispositivo.'
+            : fatalErr?.name === 'NotFoundError'
+            ? 'Nenhum sensor óptico ou câmera física encontrado no dispositivo.'
+            : fatalErr?.name === 'NotReadableError'
+            ? 'A câmera está sendo utilizada por outro aplicativo ou bloqueada pelo sistema.'
+            : fatalErr?.name === 'OverconstrainedError'
+            ? 'As configurações ópticas solicitadas não são suportadas pelo sensor.'
+            : fatalErr?.message || 'Falha ao acessar câmera.';
+          setCameraError(msg);
+          setCameraActive(false);
+          return;
+        }
+      }
+    }
 
-      const mediaStream = await navigator.mediaDevices.getUserMedia(constraints);
+    if (!mediaStream) {
+      setCameraError('Nenhum fluxo de vídeo foi disponibilizado pelo sistema.');
+      setCameraActive(false);
+      return;
+    }
+
+    try {
       streamRef.current = mediaStream;
 
       const videoTrack = mediaStream.getVideoTracks()[0];
       if (videoTrack) {
+        videoTrack.onended = () => {
+          console.warn('[VisionModule] Transmissão da câmera encerrada pelo sistema/hardware.');
+          stopCamera();
+          setCameraError('A transmissão de vídeo foi finalizada pelo sistema operacional.');
+        };
+
         inspectTrackCapabilities(videoTrack);
         const settings = videoTrack.getSettings();
         if (settings.width && settings.height) {
@@ -205,10 +254,8 @@ export const VisionModule: React.FC<Props> = ({
 
       setCameraActive(true);
     } catch (err: any) {
-      console.warn('Erro ao acessar câmera:', err);
-      setCameraError(
-        err.message || 'Permissão de câmera negada ou câmera em uso por outro aplicativo.'
-      );
+      console.warn('Erro ao inicializar visualização da câmera:', err);
+      setCameraError(err?.message || 'Falha ao iniciar renderização do vídeo.');
       setCameraActive(false);
     }
   };
@@ -219,7 +266,7 @@ export const VisionModule: React.FC<Props> = ({
     startCamera(next);
   };
 
-  // Hardware Torch Toggle
+  // Hardware Torch Toggle com feedback de erro explícito
   const toggleTorch = async () => {
     if (!streamRef.current || !hasTorch) return;
     const track = streamRef.current.getVideoTracks()[0];
@@ -231,12 +278,13 @@ export const VisionModule: React.FC<Props> = ({
         advanced: [{ torch: nextTorch }],
       });
       setTorchActive(nextTorch);
-    } catch (err) {
+    } catch (err: any) {
       console.warn('Falha ao acionar lanterna do dispositivo:', err);
+      setCameraError('Lanterna de hardware indisponível ou bloqueada neste modo.');
     }
   };
 
-  // Hardware Zoom Change
+  // Hardware Zoom Change com feedback de erro explícito
   const handleZoomChange = async (val: number) => {
     setZoomValue(val);
     if (!streamRef.current || !hasZoom) return;
@@ -247,8 +295,9 @@ export const VisionModule: React.FC<Props> = ({
       await (track as any).applyConstraints({
         advanced: [{ zoom: val }],
       });
-    } catch (err) {
+    } catch (err: any) {
       console.warn('Falha ao aplicar zoom:', err);
+      setCameraError('Zoom óptico/digital não suportado pelo sensor atual.');
     }
   };
 
