@@ -54,6 +54,11 @@ export interface EvidenceItem {
     segmentTime: string;
     verified: boolean;
   };
+  alternativeTranscriptions?: Array<{ text: string; confidence: number }>;
+  acousticNotes?: string;
+  segmentStartMs?: number;
+  segmentEndMs?: number;
+  treatedAudioBlob?: Blob;
   decisionStatus?: 'pending' | 'interference_marked' | 'confirmed_candidate' | 'discarded';
 
   // Blind independent review
@@ -356,20 +361,31 @@ export interface ToolSessionLock {
 
 export type LiveCaptionStatus =
   | 'listening'
-  | 'analyzing'
-  | 'no_speech'
   | 'possible_speech'
+  | 'analyzing'
+  | 'probable_transcription'
+  | 'inconclusive'
+  | 'no_speech'
   | 'error'
   | 'paused';
+
+export interface AlternativeTranscription {
+  text: string;
+  confidence: number;
+}
 
 export interface LiveCaptionEvent {
   id: string;
   timestampFormatted: string; // "00:42"
   timestampMs: number;
+  segmentStartMs?: number;
+  segmentEndMs?: number;
   status: LiveCaptionStatus;
   text: string;
   candidateTranscription?: string | null;
   confidence: number;
+  isProvisional?: boolean;
+  isCombinedPhrase?: boolean;
   dbfs: number;
   peakFrequencyHz: number;
   provider: string;
@@ -377,5 +393,18 @@ export interface LiveCaptionEvent {
   toolSessionId?: string;
   isRelevant: boolean;
   audioBlob?: Blob;
+  treatedAudioBlob?: Blob;
+  alternativeTranscriptions?: AlternativeTranscription[];
   alternativeHypotheses?: string[];
+  acousticNotes?: string;
+  precedingQuestion?: string;
+  reanalysisCount?: number;
+  reanalysisResults?: Array<{
+    candidateTranscription?: string | null;
+    confidence: number;
+    timestamp: number;
+    provider: string;
+  }>;
+  isAmbiguous?: boolean;
+  investigatorDecision?: 'relevant' | 'inconclusive' | 'discard';
 }

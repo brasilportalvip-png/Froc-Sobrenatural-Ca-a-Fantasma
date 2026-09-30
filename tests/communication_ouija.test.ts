@@ -205,3 +205,83 @@ test('SensorEngine: Inicialização, calibragem de baseline e leituras de sensor
   engine.stop();
 });
 
+test('LiveCaptionsEngine: Classificação estrita de inteligibilidade e regras anti-alucinação', () => {
+  // Regra 1: Confiança >= 0.75 -> Alta inteligibilidade
+  const high = LiveCaptionsEngine.classifyConfidence(0.82, 'socorro', true);
+  assert.equal(high.status, 'probable_transcription');
+  assert.equal(high.displayText, '"socorro"');
+  assert.equal(high.isSpeech, true);
+
+  // Regra 2: 0.50 a 0.74 -> Interpretação provável
+  const probable = LiveCaptionsEngine.classifyConfidence(0.64, 'maria', true);
+  assert.equal(probable.status, 'probable_transcription');
+  assert.equal(probable.displayText, '"maria"');
+
+  // Regra 3: 0.30 a 0.49 -> Possível com indicação clara
+  const possible = LiveCaptionsEngine.classifyConfidence(0.42, 'sai daqui', true);
+  assert.equal(possible.status, 'possible_speech');
+  assert.equal(possible.displayText, 'Possível: "sai daqui"');
+
+  // Regra 4: < 0.30 com voz detectada -> Não inventar palavras
+  const lowVoice = LiveCaptionsEngine.classifyConfidence(0.22, 'palavra_inventada', true);
+  assert.equal(lowVoice.candidateTranscription, null);
+  assert.equal(lowVoice.displayText, '[emissão vocal pouco inteligível]');
+  assert.equal(lowVoice.status, 'inconclusive');
+
+  // Regra 5: < 0.30 sem voz detectada -> Sem fala inteligível
+  const noSpeech = LiveCaptionsEngine.classifyConfidence(0.10, null, false);
+  assert.equal(noSpeech.candidateTranscription, null);
+  assert.equal(noSpeech.displayText, '[sem fala inteligível]');
+  assert.equal(noSpeech.status, 'no_speech');
+
+  // Regra 6: Silêncio absoluto
+  const silence = LiveCaptionsEngine.classifyConfidence(0, null, false);
+  assert.equal(silence.displayText, '[sem fala inteligível]');
+  assert.equal(silence.candidateTranscription, null);
+});
+
+test('LiveCaptionsEngine: Detecção de ambiguidade acústica entre reanálises divergentes', () => {
+  // Divergência com confiança similar entre transcrições diferentes
+  const amb = LiveCaptionsEngine.detectAmbiguity(
+    { text: 'Maria', confidence: 0.56 },
+    { text: 'Marina', confidence: 0.51 }
+  );
+  assert.equal(amb.isAmbiguous, true);
+  assert.match(amb.message || '', /ambíguo/i);
+
+  // Transcrições idênticas não são ambíguas
+  const consistent = LiveCaptionsEngine.detectAmbiguity(
+    { text: 'Não', confidence: 0.81 },
+    { text: 'não', confidence: 0.80 }
+  );
+  assert.equal(consistent.isAmbiguous, false);
+});
+
+test('LiveCaptionsEngine: Combinação de fragmentos acústicos cronológicos', () => {
+  const evt1: any = {
+    id: 'e1',
+    timestampMs: 1000,
+    timestampFormatted: '00:01',
+    text: 'sai',
+    candidateTranscription: 'sai',
+    confidence: 0.65,
+    status: 'probable_transcription',
+  };
+  const evt2: any = {
+    id: 'e2',
+    timestampMs: 2500,
+    timestampFormatted: '00:02',
+    text: 'daqui',
+    candidateTranscription: 'daqui',
+    confidence: 0.70,
+    status: 'probable_transcription',
+  };
+
+  const combinedList = LiveCaptionsEngine.combineConsecutivePhrases([evt2, evt1]);
+  assert.ok(combinedList.length > 0);
+  const newest = combinedList[0];
+  assert.equal(newest.isCombinedPhrase, true);
+  assert.equal(newest.candidateTranscription, 'sai daqui');
+  assert.equal(newest.text, '"sai daqui"');
+});
+

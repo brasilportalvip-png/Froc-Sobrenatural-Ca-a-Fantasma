@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { Session, EvidenceItem, SensorState, LiveCaptionEvent, LiveCaptionStatus } from '../types';
-import { AudioMetrics } from '../services/audioEngine';
+import { AudioMetrics, AudioEngine } from '../services/audioEngine';
 import { useAuth } from '../services/AuthContext';
 import { useToolSession } from '../services/ToolSessionContext';
 import { LiveCaptionsEngine, ChunkRateLimiter } from '../services/liveCaptionsService';
@@ -28,6 +28,11 @@ import {
   RotateCcw,
   Shield,
   Zap,
+  Pause,
+  RefreshCw,
+  AlertTriangle,
+  Layers,
+  Filter,
 } from 'lucide-react';
 import { AudioOscilloscope } from './AudioOscilloscope';
 
@@ -96,7 +101,16 @@ export const CommunicationModule: React.FC<Props> = ({
   const [isLiveCaptionsActive, setIsLiveCaptionsActive] = useState(true);
   const [isTransmittingChunk, setIsTransmittingChunk] = useState(false);
   const isTransmittingChunkRef = useRef(false);
+  const [analyzingSegmentRange, setAnalyzingSegmentRange] = useState<string | null>(null);
+  const [provisionalCaption, setProvisionalCaption] = useState<LiveCaptionEvent | null>(null);
   const [savedCaptionIds, setSavedCaptionIds] = useState<Record<string, boolean>>({});
+  const [playingAudioId, setPlayingAudioId] = useState<string | null>(null);
+  const [playingFilterType, setPlayingFilterType] = useState<'raw' | 'treated' | null>(null);
+  const [reanalyzingId, setReanalyzingId] = useState<string | null>(null);
+  const [cardDecisions, setCardDecisions] = useState<Record<string, 'relevant' | 'inconclusive' | 'discard'>>({});
+  const activeAudioElementRef = useRef<HTMLAudioElement | null>(null);
+  const lastQuestionContextRef = useRef<{ text: string; timestampMs: number; timeFormatted: string } | null>(null);
+
   const rateLimiterRef = useRef<ChunkRateLimiter>({
     lastCallTimestamp: 0,
     timestampsInWindow: [],
@@ -148,13 +162,39 @@ export const CommunicationModule: React.FC<Props> = ({
       setSpeechSupported(true);
       const recog = new SpeechRecognitionClass();
       recog.lang = 'pt-BR';
-      recog.continuous = false;
-      recog.interimResults = false;
+      recog.continuous = true;
+      recog.interimResults = true;
 
       recog.onresult = (event: any) => {
-        const text = event.results[0][0].transcript;
-        setQuestionText((prev) => (prev ? `${prev} ${text}` : text));
-        setIsListeningSpeech(false);
+        let interimText = '';
+        for (let i = event.resultIndex; i < event.results.length; ++i) {
+          if (event.results[i].isFinal) {
+            const finalTxt = event.results[i][0].transcript;
+            setQuestionText((prev) => (prev ? `${prev} ${finalTxt}` : finalTxt));
+          } else {
+            interimText += event.results[i][0].transcript;
+          }
+        }
+        if (interimText.trim()) {
+          const now = Date.now();
+          const elapsed = activeSessionRef.current ? Math.max(0, now - activeSessionRef.current.startTime) : 0;
+          setProvisionalCaption({
+            id: 'provisional_speech',
+            timestampFormatted: LiveCaptionsEngine.formatRelativeTime(elapsed),
+            timestampMs: now,
+            segmentStartMs: elapsed,
+            segmentEndMs: elapsed + 2000,
+            status: 'possible_speech',
+            text: `[PROVISÓRIO] "${interimText}"`,
+            candidateTranscription: interimText,
+            confidence: 0.45,
+            isProvisional: true,
+            dbfs: audioMetricsRef.current.dbfs,
+            peakFrequencyHz: audioMetricsRef.current.peakFrequencyHz,
+            provider: 'Web Speech API (Provisório)',
+            isRelevant: true,
+          });
+        }
       };
 
       recog.onerror = () => {
@@ -210,12 +250,35 @@ export const CommunicationModule: React.FC<Props> = ({
         return;
       }
 
-      // Se temos motor de chunks, IA disponível e sessão ativa de comunicação
-      if (onGetAudioChunk && hasGemini && isToolSessionActive) {
+      // Se temos motor de chunks, sessão ativa de comunicação e créditos/sessão disponível
+      if (onGetAudioChunk && isToolSessionActive) {
         // Bloquear ANTES de disparar onGetAudioChunk
         isTransmittingChunkRef.current = true;
         setIsTransmittingChunk(true);
         setLiveCaptionStatus('analyzing');
+
+        const now = Date.now();
+        const chunkStartElapsed = currentSession ? Math.max(0, now - currentSession.startTime) : 0;
+        const segmentRange = LiveCaptionsEngine.formatSegmentRange(chunkStartElapsed, chunkStartElapsed + 3600);
+        setAnalyzingSegmentRange(segmentRange);
+
+        // Define legenda provisória durante a gravação/transmissão
+        const provEvt: LiveCaptionEvent = {
+          id: `provisional_${now}`,
+          timestampFormatted: LiveCaptionsEngine.formatRelativeTime(chunkStartElapsed),
+          timestampMs: now,
+          segmentStartMs: chunkStartElapsed,
+          segmentEndMs: chunkStartElapsed + 3600,
+          status: 'analyzing',
+          text: 'Analisando sinal acústico...',
+          confidence: 0,
+          isProvisional: true,
+          dbfs: currentMetrics.dbfs,
+          peakFrequencyHz: currentMetrics.peakFrequencyHz,
+          provider: hasGemini ? 'Gemini 3.8 Flash' : 'Motor Espectral Local (DSP)',
+          isRelevant: true,
+        };
+        setProvisionalCaption(provEvt);
 
         try {
           const chunk = await onGetAudioChunk(3600);
@@ -249,6 +312,8 @@ export const CommunicationModule: React.FC<Props> = ({
                 audioBase64: base64Audio,
                 mimeType: chunk.mimeType,
                 toolSessionId: activeToolSessionId,
+                segmentStartMs: chunkStartElapsed,
+                segmentEndMs: chunkStartElapsed + 3600,
                 audioMetrics: {
                   dbfs: currentMetrics.dbfs,
                   peakFrequencyHz: currentMetrics.peakFrequencyHz,
@@ -264,54 +329,57 @@ export const CommunicationModule: React.FC<Props> = ({
 
             if (resp.ok) {
               const data = await resp.json();
-              const now = Date.now();
-              const elapsedSec = currentSession ? Math.max(0, Math.floor((now - currentSession.startTime) / 1000)) : 0;
-              const mins = String(Math.floor(elapsedSec / 60)).padStart(2, '0');
-              const secs = String(elapsedSec % 60).padStart(2, '0');
-              const timeFormatted = `${mins}:${secs}`;
+              const classification = LiveCaptionsEngine.classifyConfidence(
+                typeof data.confidence === 'number' ? data.confidence : 0,
+                data.candidateTranscription,
+                data.voiceDetected !== false
+              );
 
-              let displayText = '';
-              let candidate = data.candidateTranscription || null;
-              const conf = typeof data.confidence === 'number' ? data.confidence : 0;
-
-              if (candidate && conf >= 0.40) {
-                displayText = `possível fala: "${candidate}" — confiança ${Math.round(conf * 100)}%`;
-              } else if (data.voiceDetected || conf >= 0.25) {
-                displayText = 'Trecho vocal detectado, mas sem inteligibilidade suficiente.';
-                candidate = null;
-              } else {
-                displayText = 'Nenhuma fala inteligível identificada no trecho.';
-                candidate = null;
-              }
+              const precedingQuestion =
+                lastQuestionContextRef.current && (Date.now() - lastQuestionContextRef.current.timestampMs < 25000)
+                  ? lastQuestionContextRef.current.text
+                  : undefined;
 
               const evtSuffix = typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID().slice(0, 8) : Date.now().toString(36);
               const newEvt: LiveCaptionEvent = {
                 id: `evt_${now}_${evtSuffix}`,
-                timestampFormatted: timeFormatted,
+                timestampFormatted: LiveCaptionsEngine.formatRelativeTime(chunkStartElapsed),
                 timestampMs: now,
-                status: candidate ? 'possible_speech' : 'no_speech',
-                text: displayText,
-                candidateTranscription: candidate,
-                confidence: conf,
+                segmentStartMs: typeof data.segmentStartMs === 'number' ? data.segmentStartMs : chunkStartElapsed,
+                segmentEndMs: typeof data.segmentEndMs === 'number' ? data.segmentEndMs : chunkStartElapsed + 3600,
+                status: classification.status,
+                text: classification.displayText,
+                candidateTranscription: classification.candidateTranscription,
+                confidence: typeof data.confidence === 'number' ? data.confidence : 0,
+                isProvisional: false,
                 dbfs: currentMetrics.dbfs,
                 peakFrequencyHz: currentMetrics.peakFrequencyHz,
-                provider: data.provider || 'Gemini 3.8 Flash',
+                provider: data.provider || (hasGemini ? 'Gemini 3.8 Flash' : 'Motor Espectral Local (DSP)'),
                 executionTimeMs: data.executionTimeMs,
                 toolSessionId: activeToolSessionId,
-                isRelevant: !!candidate || conf >= 0.25 || currentMetrics.isVoiceBand,
+                isRelevant: classification.isSpeech || data.voiceDetected || classification.status === 'possible_speech' || classification.status === 'probable_transcription' || currentMetrics.isVoiceBand,
                 audioBlob: chunk.blob,
-                alternativeHypotheses: data.alternativeHypotheses,
+                alternativeTranscriptions: data.alternativeTranscriptions || [],
+                alternativeHypotheses: data.alternativeHypotheses || [],
+                acousticNotes: data.acousticNotes || `[Medição Real DSP] Volume dBFS: ${currentMetrics.dbfs.toFixed(1)} | Pico: ${currentMetrics.peakFrequencyHz} Hz`,
+                precedingQuestion,
               };
 
-              setLiveCaptionEvents((prev) => [newEvt, ...prev.slice(0, 49)]);
+              setProvisionalCaption(null);
+              setLiveCaptionEvents((prev) => {
+                const combined = LiveCaptionsEngine.combineConsecutivePhrases([newEvt, ...prev.slice(0, 49)]);
+                return combined;
+              });
             }
           }
         } catch (chunkErr) {
           console.warn('[LiveCaptions] Falha no processamento de chunk:', chunkErr);
           setLiveCaptionStatus('error');
+          setProvisionalCaption(null);
         } finally {
           isTransmittingChunkRef.current = false;
           setIsTransmittingChunk(false);
+          setAnalyzingSegmentRange(null);
           setLiveCaptionStatus('listening');
         }
       }
@@ -339,6 +407,148 @@ export const CommunicationModule: React.FC<Props> = ({
     }
   };
 
+  const handlePlayAudio = async (evt: LiveCaptionEvent, type: 'raw' | 'treated' = 'raw') => {
+    if (!evt.audioBlob) return;
+
+    if (playingAudioId === evt.id && playingFilterType === type) {
+      if (activeAudioElementRef.current) {
+        activeAudioElementRef.current.pause();
+      }
+      setPlayingAudioId(null);
+      setPlayingFilterType(null);
+      return;
+    }
+
+    if (activeAudioElementRef.current) {
+      activeAudioElementRef.current.pause();
+      activeAudioElementRef.current = null;
+    }
+
+    try {
+      let playBlob = evt.audioBlob;
+      if (type === 'treated') {
+        if (evt.treatedAudioBlob) {
+          playBlob = evt.treatedAudioBlob;
+        } else {
+          const treatedBuffer = await AudioEngine.processTreatedAudio(evt.audioBlob);
+          if (treatedBuffer) {
+            const treatedWav = AudioEngine.audioBufferToWavBlob(treatedBuffer);
+            evt.treatedAudioBlob = treatedWav;
+            playBlob = treatedWav;
+          }
+        }
+      }
+
+      const url = URL.createObjectURL(playBlob);
+      const audio = new Audio(url);
+      activeAudioElementRef.current = audio;
+      setPlayingAudioId(evt.id);
+      setPlayingFilterType(type);
+
+      audio.onended = () => {
+        URL.revokeObjectURL(url);
+        setPlayingAudioId(null);
+        setPlayingFilterType(null);
+        activeAudioElementRef.current = null;
+      };
+      audio.onerror = () => {
+        URL.revokeObjectURL(url);
+        setPlayingAudioId(null);
+        setPlayingFilterType(null);
+        activeAudioElementRef.current = null;
+      };
+
+      await audio.play();
+    } catch (playErr) {
+      console.warn('[AudioPlayer] Falha ao reproduzir trecho:', playErr);
+      setPlayingAudioId(null);
+      setPlayingFilterType(null);
+    }
+  };
+
+  const handleReanalyzeSnippet = async (evt: LiveCaptionEvent) => {
+    if (!evt.audioBlob || isTransmittingChunkRef.current) return;
+    setReanalyzingId(evt.id);
+
+    try {
+      const token = await getIdToken();
+      const reader = new FileReader();
+      const base64Audio = await new Promise<string>((res) => {
+        reader.onloadend = () => res((reader.result as string) || '');
+        reader.readAsDataURL(evt.audioBlob!);
+      });
+
+      const reqHeaders: Record<string, string> = { 'Content-Type': 'application/json' };
+      if (token) reqHeaders['Authorization'] = `Bearer ${token}`;
+      if (activeToolSessionId) reqHeaders['x-tool-session-id'] = activeToolSessionId;
+      reqHeaders['x-request-id'] = `reanalyze_${evt.id}_${Date.now()}`;
+
+      const resp = await fetch('/api/analyze', {
+        method: 'POST',
+        headers: reqHeaders,
+        body: JSON.stringify({
+          question: `Reanálise pericial acústica do trecho gravado em ${evt.timestampFormatted}`,
+          audioBase64: base64Audio,
+          mimeType: evt.audioBlob.type || 'audio/webm',
+          toolSessionId: activeToolSessionId,
+          audioMetrics: {
+            dbfs: evt.dbfs,
+            peakFrequencyHz: evt.peakFrequencyHz,
+            rms: 0.05,
+            isVoiceBand: true,
+          },
+          sensorContext: sensorStateRef.current,
+        }),
+      });
+
+      if (resp.ok) {
+        const data = await resp.json();
+        const ambiguity = LiveCaptionsEngine.detectAmbiguity(
+          { text: evt.candidateTranscription, confidence: evt.confidence },
+          { text: data.candidateTranscription, confidence: data.confidence }
+        );
+
+        const reanalysisEntry = {
+          candidateTranscription: data.candidateTranscription || null,
+          confidence: typeof data.confidence === 'number' ? data.confidence : 0,
+          timestamp: Date.now(),
+          provider: data.provider || 'Reanálise Forense',
+        };
+
+        setLiveCaptionEvents((prev) =>
+          prev.map((item) => {
+            if (item.id === evt.id) {
+              const updatedReanalysisList = [...(item.reanalysisResults || []), reanalysisEntry];
+              return {
+                ...item,
+                reanalysisCount: (item.reanalysisCount || 0) + 1,
+                reanalysisResults: updatedReanalysisList,
+                isAmbiguous: ambiguity.isAmbiguous,
+                alternativeTranscriptions: [
+                  ...(item.alternativeTranscriptions || []),
+                  ...(data.alternativeTranscriptions || []),
+                ],
+                acousticNotes: data.acousticNotes || item.acousticNotes,
+              };
+            }
+            return item;
+          })
+        );
+      }
+    } catch (err) {
+      console.warn('[Reanalyze] Falha na reanálise pericial:', err);
+    } finally {
+      setReanalyzingId(null);
+    }
+  };
+
+  const handleSetDecision = async (evt: LiveCaptionEvent, decision: 'relevant' | 'inconclusive' | 'discard') => {
+    setCardDecisions((prev) => ({ ...prev, [evt.id]: decision }));
+    setLiveCaptionEvents((prev) =>
+      prev.map((item) => (item.id === evt.id ? { ...item, investigatorDecision: decision } : item))
+    );
+  };
+
   const handleSendQuestion = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!questionText.trim() || isProcessing) return;
@@ -347,6 +557,14 @@ export const CommunicationModule: React.FC<Props> = ({
     setQuestionText('');
     setQuestionError('');
     setIsProcessing(true);
+
+    const now = Date.now();
+    const elapsed = activeSessionRef.current ? Math.max(0, now - activeSessionRef.current.startTime) : 0;
+    lastQuestionContextRef.current = {
+      text: q,
+      timestampMs: now,
+      timeFormatted: LiveCaptionsEngine.formatRelativeTime(elapsed),
+    };
 
     try {
       let audioBlob: Blob | undefined;
@@ -725,52 +943,52 @@ export const CommunicationModule: React.FC<Props> = ({
       {/* 2. Osciloscópio & Espectrograma em Tempo Real */}
       <AudioOscilloscope metrics={audioMetrics} isRecording={isRecording} />
 
-      {/* 2.5 Painel de Legenda em Tempo Real (VAD + IA) */}
-      <div className="bg-[#080d16] border border-cyan-950/90 rounded-lg p-3 sm:p-4 shadow-lg space-y-3">
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-slate-800/80 pb-2.5">
-          <div className="flex items-center gap-2">
-            <span className="w-2.5 h-2.5 rounded-full bg-cyan-400 shadow-[0_0_10px_#00f0ff]" />
-            <h3 className="text-xs sm:text-sm font-bold text-white font-mono uppercase tracking-wider">
-              MONITORAMENTO DE VOZ EM TEMPO REAL (VAD + IA)
-            </h3>
+      {/* 2.5 Intérprete de Falas Captadas & Legendas ao Vivo (VAD + IA + DSP) */}
+      <div className="bg-[#080d16] border border-cyan-950/90 rounded-lg p-3 sm:p-4 shadow-lg space-y-4">
+        {/* Header da Seção com Indicador Dinâmico da IA */}
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-slate-800/80 pb-3">
+          <div className="space-y-0.5">
+            <div className="flex items-center gap-2">
+              <span className="w-2.5 h-2.5 rounded-full bg-cyan-400 shadow-[0_0_10px_#00f0ff]" />
+              <h3 className="text-xs sm:text-sm font-bold text-white font-mono uppercase tracking-wider">
+                LEGENDAS AO VIVO &amp; INTÉRPRETE DE FALAS
+              </h3>
+            </div>
+            <p className="text-[11px] font-mono text-slate-400">
+              Transcrição acústica contínua sem suposições de entidades · Áudio original preservado
+            </p>
           </div>
 
           <div className="flex items-center gap-2 flex-wrap">
-            {/* Status Badges */}
+            {/* Indicador da IA em Tempo Real */}
             <div className="flex items-center gap-1.5 font-mono text-[11px]">
-              {liveCaptionStatus === 'listening' && (
-                <span className="flex items-center gap-1.5 text-emerald-300 bg-emerald-950/80 border border-emerald-500/50 px-2 py-0.5 rounded">
-                  <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
-                  OUVINDO
+              {!hasGemini ? (
+                <span className="flex items-center gap-1.5 text-amber-300 bg-amber-950/80 border border-amber-500/50 px-2 py-0.5 rounded">
+                  <span className="w-2 h-2 rounded-full bg-amber-400" />
+                  Gemini indisponível — análise espectral local ativa
                 </span>
-              )}
-              {liveCaptionStatus === 'analyzing' && (
-                <span className="flex items-center gap-1.5 text-cyan-300 bg-cyan-950/80 border border-cyan-500/50 px-2 py-0.5 rounded animate-pulse">
+              ) : liveCaptionStatus === 'analyzing' ? (
+                <span className="flex items-center gap-1.5 text-cyan-300 bg-cyan-950/80 border border-cyan-500/50 px-2.5 py-0.5 rounded animate-pulse">
                   <span className="w-2 h-2 rounded-full bg-cyan-400 animate-ping" />
-                  ANALISANDO
+                  ● Analisando trecho {analyzingSegmentRange || 'em andamento'}
                 </span>
-              )}
-              {liveCaptionStatus === 'no_speech' && (
-                <span className="flex items-center gap-1.5 text-slate-400 bg-slate-900 border border-slate-700 px-2 py-0.5 rounded">
-                  <span className="w-2 h-2 rounded-full bg-slate-500" />
-                  SEM FALA
-                </span>
-              )}
-              {liveCaptionStatus === 'possible_speech' && (
+              ) : liveCaptionStatus === 'possible_speech' ? (
                 <span className="flex items-center gap-1.5 text-amber-300 bg-amber-950/80 border border-amber-500/50 px-2 py-0.5 rounded">
                   <span className="w-2 h-2 rounded-full bg-amber-400 animate-bounce" />
-                  POSSÍVEL FALA
+                  ● POSSÍVEL FALA
                 </span>
-              )}
-              {liveCaptionStatus === 'error' && (
-                <span className="flex items-center gap-1.5 text-rose-300 bg-rose-950/80 border border-rose-500/50 px-2 py-0.5 rounded">
-                  <span className="w-2 h-2 rounded-full bg-rose-400" />
-                  ERRO
+              ) : liveCaptionStatus === 'listening' ? (
+                <span className="flex items-center gap-1.5 text-emerald-300 bg-emerald-950/80 border border-emerald-500/50 px-2 py-0.5 rounded">
+                  <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
+                  ● Ouvindo
                 </span>
-              )}
-              {liveCaptionStatus === 'paused' && (
+              ) : liveCaptionStatus === 'paused' ? (
                 <span className="flex items-center gap-1.5 text-slate-500 bg-slate-950 border border-slate-800 px-2 py-0.5 rounded">
                   PAUSADO
+                </span>
+              ) : (
+                <span className="flex items-center gap-1.5 text-slate-400 bg-slate-900 border border-slate-700 px-2 py-0.5 rounded">
+                  SEM FALA INTELIGÍVEL
                 </span>
               )}
             </div>
@@ -779,7 +997,7 @@ export const CommunicationModule: React.FC<Props> = ({
               onClick={() => setIsLiveCaptionsActive(!isLiveCaptionsActive)}
               className={`px-2.5 py-1 rounded text-xs font-mono border transition cursor-pointer ${
                 isLiveCaptionsActive
-                  ? 'bg-cyan-950/60 border-cyan-500 text-cyan-300'
+                  ? 'bg-cyan-950/60 border-cyan-500 text-cyan-300 hover:bg-cyan-900/60'
                   : 'bg-slate-900 border-slate-700 text-slate-400 hover:text-white'
               }`}
             >
@@ -788,80 +1006,434 @@ export const CommunicationModule: React.FC<Props> = ({
           </div>
         </div>
 
-        {/* Privacy Banner */}
+        {/* Banner de Processamento de Áudio com Aviso de Privacidade */}
         {isTransmittingChunk && (
-          <div className="p-2 rounded bg-cyan-950/80 border border-cyan-500/60 flex items-center justify-between text-xs font-mono text-cyan-200 animate-pulse">
+          <div className="p-2.5 rounded bg-cyan-950/80 border border-cyan-500/60 flex items-center justify-between text-xs font-mono text-cyan-200 animate-pulse">
             <div className="flex items-center gap-2">
               <Shield className="w-4 h-4 text-cyan-400 shrink-0" />
               <span>
-                <strong>[AVISO DE PRIVACIDADE]</strong> Trecho de áudio selecionado sendo enviado para análise forense neural (Gemini)...
+                <strong>[AVISO FORENSE DE PRIVACIDADE]</strong> Trecho de áudio selecionado ({analyzingSegmentRange || '3.6s'}) em análise acústica neural...
               </span>
             </div>
-            <span className="text-[10px] text-cyan-400 uppercase hidden sm:inline">Tráfego Protegido via TLS 1.3</span>
+            <span className="text-[10px] text-cyan-400 uppercase hidden sm:inline">Criptografia TLS 1.3</span>
           </div>
         )}
 
-        {/* Captions feed */}
-        <div className="space-y-2 max-h-[200px] overflow-y-auto pr-1">
-          {liveCaptionEvents.length === 0 ? (
-            <div className="text-center py-5 text-slate-500 font-mono text-xs border border-dashed border-slate-800/80 rounded">
-              <p>Nenhuma ocorrência vocal capturada até o momento.</p>
-              <p className="text-[11px] text-slate-600 mt-0.5">
-                O motor local (VAD) analisa energia vocal (250Hz–3.4kHz) e silêncio antes de acionar a IA.
-              </p>
-            </div>
-          ) : (
-            liveCaptionEvents.map((evt) => (
-              <div
-                key={evt.id}
-                className="bg-[#0b121e] border border-slate-800/80 hover:border-cyan-900/60 rounded p-2.5 flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs font-mono transition"
-              >
-                <div className="flex-1 space-y-1">
-                  <div className="flex items-center gap-2 flex-wrap">
-                    <span className="text-cyan-400 font-bold">{evt.timestampFormatted}</span>
-                    <span className="text-slate-600">—</span>
-                    <span className={evt.candidateTranscription ? 'text-emerald-300 font-semibold' : 'text-slate-300'}>
-                      {evt.text}
-                    </span>
-                  </div>
+        {/* Bloco 1: Feed Cronológico de LEGENDAS AO VIVO */}
+        <div className="space-y-2">
+          <div className="flex items-center justify-between text-xs font-mono text-slate-400">
+            <span className="font-bold text-cyan-300 uppercase tracking-wide flex items-center gap-1.5">
+              <Clock className="w-3.5 h-3.5 text-cyan-400" />
+              <span>LINHA DO TEMPO DA SESSÃO (Clique na legenda para ouvir)</span>
+            </span>
+            <span className="text-[10px] text-slate-500">Reprodução inclui ~500ms de contexto acústico</span>
+          </div>
 
-                  <div className="flex items-center gap-3 text-[10px] text-slate-500 flex-wrap">
-                    <span>dBFS: <strong className="text-slate-300">{evt.dbfs.toFixed(1)}</strong></span>
-                    <span>Pico: <strong className="text-slate-300">{evt.peakFrequencyHz} Hz</strong></span>
-                    {evt.confidence > 0 && (
-                      <span>Confiança: <strong className="text-cyan-400">{Math.round(evt.confidence * 100)}%</strong></span>
-                    )}
-                    <span>Provedor: <strong className="text-slate-400">{evt.provider}</strong></span>
-                  </div>
+          <div className="space-y-1.5 max-h-[220px] overflow-y-auto pr-1 font-mono text-xs">
+            {/* Legenda Provisória (WebSpeech ou chunk em análise) */}
+            {provisionalCaption && (
+              <div className="bg-[#0f172a] border border-cyan-500/50 rounded p-2.5 flex items-center justify-between gap-2 text-cyan-200 animate-pulse">
+                <div className="flex items-center gap-2 flex-wrap">
+                  <span className="text-cyan-400 font-bold">[{provisionalCaption.timestampFormatted}]</span>
+                  <span className="px-1.5 py-0.5 rounded bg-amber-950 border border-amber-600/60 text-amber-300 text-[10px] font-bold">
+                    LEGENDA PROVISÓRIA
+                  </span>
+                  <span className="italic">{provisionalCaption.text}</span>
                 </div>
+                <span className="text-[10px] text-slate-400 shrink-0">Aguardando confirmação pericial...</span>
+              </div>
+            )}
 
-                {evt.isRelevant && (
-                  <button
-                    onClick={() => handleSaveCaptionItem(evt)}
-                    disabled={savedCaptionIds[evt.id]}
-                    className={`px-2.5 py-1 rounded text-[11px] font-mono flex items-center gap-1 cursor-pointer transition shrink-0 ${
-                      savedCaptionIds[evt.id]
-                        ? 'bg-emerald-950/80 border border-emerald-600/50 text-emerald-300 cursor-default'
-                        : 'bg-cyan-600/30 hover:bg-cyan-600/60 border border-cyan-500/60 text-cyan-200'
+            {liveCaptionEvents.length === 0 && !provisionalCaption ? (
+              <div className="text-center py-6 text-slate-500 font-mono text-xs border border-dashed border-slate-800/80 rounded">
+                <p>Nenhuma legenda captada na sessão até o momento.</p>
+                <p className="text-[11px] text-slate-600 mt-0.5">
+                  O sinal é monitorado continuamente. Silêncio e ruído permanecem sem texto inventado.
+                </p>
+              </div>
+            ) : (
+              liveCaptionEvents.map((evt) => {
+                const isPlaying = playingAudioId === evt.id;
+                const confPercent = Math.round((evt.confidence || 0) * 100);
+
+                return (
+                  <div
+                    key={evt.id}
+                    onClick={() => evt.audioBlob && handlePlayAudio(evt, 'raw')}
+                    title="Clique para reproduzir trecho de áudio original sincronizado"
+                    className={`bg-[#0b121e] border rounded p-2 flex flex-col sm:flex-row sm:items-center justify-between gap-2 transition cursor-pointer ${
+                      isPlaying
+                        ? 'border-cyan-400 bg-cyan-950/40 shadow-[0_0_12px_rgba(0,240,255,0.15)]'
+                        : 'border-slate-800/80 hover:border-cyan-800'
                     }`}
                   >
-                    {savedCaptionIds[evt.id] ? (
-                      <>
-                        <Check className="w-3 h-3 text-emerald-400" />
-                        <span>SALVO NA CADEIA</span>
-                      </>
-                    ) : (
-                      <>
-                        <FileCheck className="w-3 h-3 text-cyan-400" />
-                        <span>SALVAR COMO EVIDÊNCIA</span>
-                      </>
-                    )}
-                  </button>
-                )}
-              </div>
-            ))
-          )}
+                    <div className="flex-1 space-y-1">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <span className="text-cyan-400 font-bold">[{evt.timestampFormatted}]</span>
+
+                        {/* Status Badge */}
+                        <span
+                          className={`text-[9px] font-bold px-1.5 py-0.5 rounded uppercase ${
+                            evt.confidence >= 0.75
+                              ? 'bg-emerald-950 text-emerald-300 border border-emerald-500/60'
+                              : evt.confidence >= 0.50
+                              ? 'bg-cyan-950 text-cyan-300 border border-cyan-500/60'
+                              : evt.confidence >= 0.30
+                              ? 'bg-amber-950 text-amber-300 border border-amber-500/60'
+                              : 'bg-slate-900 text-slate-400 border border-slate-700'
+                          }`}
+                        >
+                          {evt.confidence >= 0.75
+                            ? 'TRANSCRIÇÃO DE ALTA INTELIGIBILIDADE'
+                            : evt.confidence >= 0.50
+                            ? 'TRANSCRIÇÃO PROVÁVEL'
+                            : evt.confidence >= 0.30
+                            ? 'POSSÍVEL FALA'
+                            : evt.status === 'no_speech'
+                            ? 'SEM FALA INTELIGÍVEL'
+                            : 'INCONCLUSIVO'}
+                        </span>
+
+                        <span className="text-[10px] text-slate-500 font-semibold">[ANALISADA]</span>
+
+                        {evt.isCombinedPhrase && (
+                          <span className="text-[9px] bg-purple-950 text-purple-300 border border-purple-500/50 px-1 py-0.5 rounded">
+                            Frase Combinada
+                          </span>
+                        )}
+
+                        {evt.isAmbiguous && (
+                          <span className="text-[9px] bg-rose-950 text-rose-300 border border-rose-500/60 px-1.5 py-0.5 rounded flex items-center gap-1">
+                            <AlertTriangle className="w-2.5 h-2.5" />
+                            Resultado Ambíguo
+                          </span>
+                        )}
+
+                        <span className="text-slate-600">—</span>
+
+                        {/* Texto da legenda de acordo com as regras de confiança */}
+                        <span
+                          className={`font-sans font-medium text-xs ${
+                            evt.confidence >= 0.75
+                              ? 'text-emerald-300 font-bold'
+                              : evt.confidence >= 0.50
+                              ? 'text-cyan-200 font-semibold'
+                              : evt.confidence >= 0.30
+                              ? 'text-amber-300 italic'
+                              : 'text-slate-400 italic'
+                          }`}
+                        >
+                          {evt.text}
+                        </span>
+
+                        {evt.confidence > 0 && (
+                          <span className="text-slate-400 text-[10px]">
+                            — Confiança: <strong className="text-cyan-300">{confPercent}%</strong>
+                          </span>
+                        )}
+                      </div>
+
+                      {/* Pergunta do investigador associada (se ocorrido logo após) */}
+                      {evt.precedingQuestion && (
+                        <p className="text-[10px] text-cyan-400/80 font-mono">
+                          ↳ Após pergunta: "{evt.precedingQuestion}" (Possível fala captada após a pergunta)
+                        </p>
+                      )}
+                    </div>
+
+                    <div className="flex items-center gap-2 shrink-0">
+                      {evt.audioBlob && (
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handlePlayAudio(evt, 'raw');
+                          }}
+                          className={`px-2 py-1 rounded text-[10px] font-mono flex items-center gap-1 transition ${
+                            isPlaying
+                              ? 'bg-cyan-500 text-slate-950 font-bold'
+                              : 'bg-slate-800 hover:bg-slate-700 text-cyan-300'
+                          }`}
+                        >
+                          {isPlaying ? <Pause className="w-3 h-3" /> : <Volume2 className="w-3 h-3" />}
+                          <span>{isPlaying ? 'PAUSAR' : 'OUVIR'}</span>
+                        </button>
+                      )}
+
+                      {evt.isRelevant && (
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleSaveCaptionItem(evt);
+                          }}
+                          disabled={savedCaptionIds[evt.id]}
+                          className={`px-2 py-1 rounded text-[10px] font-mono flex items-center gap-1 transition ${
+                            savedCaptionIds[evt.id]
+                              ? 'bg-emerald-950/80 border border-emerald-600/50 text-emerald-300 cursor-default'
+                              : 'bg-cyan-600/30 hover:bg-cyan-600/60 border border-cyan-500/60 text-cyan-200'
+                          }`}
+                        >
+                          {savedCaptionIds[evt.id] ? (
+                            <>
+                              <Check className="w-3 h-3 text-emerald-400" />
+                              <span>SALVO</span>
+                            </>
+                          ) : (
+                            <>
+                              <FileCheck className="w-3 h-3 text-cyan-400" />
+                              <span>SALVAR</span>
+                            </>
+                          )}
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                );
+              })
+            )}
+          </div>
         </div>
+
+        {/* Bloco 2: Cards Detalhados de Interpretação Pericial (POSSÍVEIS FALAS DETECTADAS) */}
+        {liveCaptionEvents.some((e) => e.isRelevant || e.candidateTranscription || e.confidence >= 0.30) && (
+          <div className="pt-3 border-t border-slate-800/80 space-y-3">
+            <div className="flex items-center justify-between text-xs font-mono">
+              <span className="font-bold text-white uppercase tracking-wider flex items-center gap-1.5">
+                <Sparkles className="w-4 h-4 text-cyan-400" />
+                <span>POSSÍVEIS FALAS DETECTADAS — INTERPRETAÇÃO FORENSE</span>
+              </span>
+              <span className="text-[10px] text-slate-400">
+                A IA sugere interpretações acústicas · O investigador decide a validade
+              </span>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+              {liveCaptionEvents
+                .filter((e) => e.isRelevant || e.candidateTranscription || e.confidence >= 0.30)
+                .slice(0, 6)
+                .map((card) => {
+                  const isPlayingRaw = playingAudioId === card.id && playingFilterType === 'raw';
+                  const isPlayingTreated = playingAudioId === card.id && playingFilterType === 'treated';
+                  const isReanalyzing = reanalyzingId === card.id;
+                  const decision = cardDecisions[card.id] || card.investigatorDecision || 'inconclusive';
+
+                  return (
+                    <div
+                      key={card.id}
+                      className="bg-[#060b13] border border-cyan-900/60 hover:border-cyan-500/60 rounded-lg p-3 space-y-2.5 font-mono text-xs transition shadow-md"
+                    >
+                      {/* Top Header */}
+                      <div className="flex items-center justify-between border-b border-slate-800 pb-2">
+                        <div className="flex items-center gap-2">
+                          <span className="px-1.5 py-0.5 rounded bg-cyan-950 text-cyan-300 border border-cyan-600/50 text-[10px] font-bold">
+                            POSSÍVEL FALA DETECTADA
+                          </span>
+                          <span className="text-slate-400 font-semibold">
+                            Trecho: {card.timestampFormatted} – {LiveCaptionsEngine.formatRelativeTime(card.segmentEndMs || card.timestampMs + 3600)}
+                          </span>
+                        </div>
+                        <span className="text-cyan-400 font-bold bg-slate-900 px-2 py-0.5 rounded border border-slate-800 text-[11px]">
+                          Confiança: {Math.round((card.confidence || 0) * 100)}%
+                        </span>
+                      </div>
+
+                      {/* Sequência Pergunta -> Resposta Posterior */}
+                      {card.precedingQuestion && (
+                        <div className="bg-[#0b1322] p-2 rounded border border-slate-800 space-y-0.5">
+                          <span className="text-[9px] text-slate-500 uppercase block font-bold">
+                            INVESTIGADOR — Pergunta Formulada:
+                          </span>
+                          <p className="text-slate-300 font-sans text-xs">"{card.precedingQuestion}"</p>
+                          <span className="text-[9px] text-cyan-400 block pt-0.5">
+                            ↳ ÁUDIO: Possível fala captada após a pergunta.
+                          </span>
+                        </div>
+                      )}
+
+                      {/* Interpretação Principal */}
+                      <div className="bg-[#08121f] p-2.5 rounded border border-cyan-900/50 space-y-1">
+                        <span className="text-[9px] text-slate-400 uppercase tracking-wide block">
+                          Interpretação Principal:
+                        </span>
+                        <p className="text-sm font-bold text-emerald-300 font-sans">
+                          {card.candidateTranscription
+                            ? `"${card.candidateTranscription}"`
+                            : '[emissão vocal pouco inteligível]'}
+                        </p>
+                      </div>
+
+                      {/* Outras Interpretações Possíveis */}
+                      <div className="bg-[#080d16] p-2 rounded border border-slate-800/80 space-y-1 text-[11px]">
+                        <span className="text-[9px] text-slate-500 uppercase block font-bold">
+                          Outras Interpretações Possíveis (Acústica em Dúvida):
+                        </span>
+                        {card.alternativeTranscriptions && card.alternativeTranscriptions.length > 0 ? (
+                          <div className="flex flex-wrap gap-1.5 pt-0.5">
+                            {card.alternativeTranscriptions.map((alt, i) => (
+                              <span
+                                key={i}
+                                className="px-2 py-0.5 rounded bg-slate-900 border border-slate-700 text-slate-300"
+                              >
+                                "{alt.text}" ({Math.round(alt.confidence * 100)}%)
+                              </span>
+                            ))}
+                          </div>
+                        ) : (
+                          <p className="text-slate-400 italic">
+                            Sem alternativas fonéticas estruturadas (emissão vocal indistinta).
+                          </p>
+                        )}
+                      </div>
+
+                      {/* Histórico de Reanálises com Detecção de Divergência/Ambiguidade */}
+                      {card.reanalysisResults && card.reanalysisResults.length > 0 && (
+                        <div className="bg-[#0b101d] p-2 rounded border border-purple-900/50 space-y-1 text-[11px]">
+                          <span className="text-[9px] text-purple-400 uppercase font-bold block">
+                            Histórico de Reanálises:
+                          </span>
+                          <div className="space-y-0.5 text-slate-300">
+                            <div>Análise 1: "{card.candidateTranscription || 'Indeterminado'}" ({Math.round((card.confidence || 0) * 100)}%)</div>
+                            {card.reanalysisResults.map((r, idx) => (
+                              <div key={idx}>
+                                Análise {idx + 2}: "{r.candidateTranscription || 'Indeterminado'}" ({Math.round((r.confidence || 0) * 100)}%)
+                              </div>
+                            ))}
+                          </div>
+                          {card.isAmbiguous && (
+                            <div className="mt-1 p-1.5 rounded bg-rose-950/80 border border-rose-500/60 text-rose-300 font-bold flex items-center gap-1.5">
+                              <AlertTriangle className="w-3.5 h-3.5 text-rose-400" />
+                              <span>Resultado acústico ambíguo. Divergência mantida sem descarte arbitrário.</span>
+                            </div>
+                          )}
+                        </div>
+                      )}
+
+                      {/* Propriedades Acústicas e Hipóteses Físicas */}
+                      <div className="text-[10px] text-slate-400 space-y-0.5 bg-slate-950/60 p-2 rounded border border-slate-800">
+                        <div>
+                          <strong className="text-slate-300">Propriedades Acústicas:</strong>{' '}
+                          {card.acousticNotes || `dBFS: ${card.dbfs.toFixed(1)} | Pico: ${card.peakFrequencyHz} Hz`}
+                        </div>
+                        {card.alternativeHypotheses && card.alternativeHypotheses.length > 0 && (
+                          <div className="text-slate-500">
+                            <strong className="text-slate-400">Hipóteses Físicas:</strong>{' '}
+                            {card.alternativeHypotheses.slice(0, 3).join(' · ')}
+                          </div>
+                        )}
+                      </div>
+
+                      {/* Observação Forense Obrigatória */}
+                      <p className="text-[10px] text-slate-400 font-mono italic bg-cyan-950/30 p-1.5 rounded border border-cyan-900/40">
+                        * Interpretação acústica da gravação. A origem da voz não foi determinada.
+                      </p>
+
+                      {/* Botões de Ação: Ouvir Original / Ouvir Filtrado / Reanalisar / Salvar */}
+                      <div className="pt-1 border-t border-slate-800 flex flex-wrap items-center justify-between gap-1.5">
+                        <div className="flex items-center gap-1.5">
+                          <button
+                            type="button"
+                            onClick={() => handlePlayAudio(card, 'raw')}
+                            className={`px-2 py-1 rounded text-[10px] font-mono flex items-center gap-1 transition ${
+                              isPlayingRaw
+                                ? 'bg-cyan-500 text-slate-950 font-bold'
+                                : 'bg-slate-800 hover:bg-slate-700 text-cyan-300'
+                            }`}
+                          >
+                            {isPlayingRaw ? <Pause className="w-3 h-3" /> : <Play className="w-3 h-3" />}
+                            <span>Original</span>
+                          </button>
+
+                          <button
+                            type="button"
+                            onClick={() => handlePlayAudio(card, 'treated')}
+                            className={`px-2 py-1 rounded text-[10px] font-mono flex items-center gap-1 transition ${
+                              isPlayingTreated
+                                ? 'bg-purple-500 text-white font-bold'
+                                : 'bg-slate-800 hover:bg-slate-700 text-purple-300'
+                            }`}
+                          >
+                            {isPlayingTreated ? <Pause className="w-3 h-3" /> : <Filter className="w-3 h-3" />}
+                            <span>Filtrado (DSP)</span>
+                          </button>
+
+                          <button
+                            type="button"
+                            onClick={() => handleReanalyzeSnippet(card)}
+                            disabled={isReanalyzing}
+                            className="px-2 py-1 rounded text-[10px] font-mono bg-slate-800 hover:bg-cyan-950 text-slate-300 hover:text-cyan-300 flex items-center gap-1 border border-slate-700 transition"
+                          >
+                            <RefreshCw className={`w-3 h-3 ${isReanalyzing ? 'animate-spin text-cyan-400' : ''}`} />
+                            <span>{isReanalyzing ? 'Reanalisando...' : 'Reanalisar'}</span>
+                          </button>
+                        </div>
+
+                        <button
+                          type="button"
+                          onClick={() => handleSaveCaptionItem(card)}
+                          disabled={savedCaptionIds[card.id]}
+                          className={`px-2.5 py-1 rounded text-[10px] font-mono flex items-center gap-1 transition ${
+                            savedCaptionIds[card.id]
+                              ? 'bg-emerald-950 text-emerald-300 border border-emerald-600/50 cursor-default'
+                              : 'bg-cyan-600/40 hover:bg-cyan-600/70 border border-cyan-500/60 text-cyan-200'
+                          }`}
+                        >
+                          <FileCheck className="w-3 h-3" />
+                          <span>{savedCaptionIds[card.id] ? 'Salvo' : 'Salvar Evidência'}</span>
+                        </button>
+                      </div>
+
+                      <p className="text-[9px] text-slate-500 font-mono">
+                        Áudio filtrado é uma cópia processada (300Hz–3.4kHz). A gravação original permanece preservada.
+                      </p>
+
+                      {/* Decisão do Investigador: [RELEVANTE] [INCONCLUSIVO] [DESCARTAR] */}
+                      <div className="pt-1.5 border-t border-slate-800 flex items-center justify-between flex-wrap gap-1.5">
+                        <span className="text-[10px] text-slate-400 uppercase font-bold">
+                          Decisão do Investigador:
+                        </span>
+                        <div className="flex items-center gap-1">
+                          <button
+                            type="button"
+                            onClick={() => handleSetDecision(card, 'relevant')}
+                            className={`px-2 py-0.5 rounded text-[10px] font-mono transition ${
+                              decision === 'relevant'
+                                ? 'bg-emerald-900 text-emerald-200 border border-emerald-500 font-bold'
+                                : 'bg-slate-900 text-slate-400 hover:text-white border border-slate-800'
+                            }`}
+                          >
+                            [RELEVANTE]
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => handleSetDecision(card, 'inconclusive')}
+                            className={`px-2 py-0.5 rounded text-[10px] font-mono transition ${
+                              decision === 'inconclusive'
+                                ? 'bg-amber-900 text-amber-200 border border-amber-500 font-bold'
+                                : 'bg-slate-900 text-slate-400 hover:text-white border border-slate-800'
+                            }`}
+                          >
+                            [INCONCLUSIVO]
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => handleSetDecision(card, 'discard')}
+                            className={`px-2 py-0.5 rounded text-[10px] font-mono transition ${
+                              decision === 'discard'
+                                ? 'bg-rose-900 text-rose-200 border border-rose-500 font-bold'
+                                : 'bg-slate-900 text-slate-400 hover:text-white border border-slate-800'
+                            }`}
+                          >
+                            [DESCARTAR]
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+            </div>
+          </div>
+        )}
       </div>
 
       {/* 3. Área de Entrada de Pergunta do Investigador */}

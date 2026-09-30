@@ -773,6 +773,7 @@ export default function App() {
         ? `Legenda Vocal: "${event.candidateTranscription}"`
         : `Detecção de Sinal Vocal (${event.dbfs.toFixed(0)} dBFS)`,
       details: event.text,
+      questionText: event.precedingQuestion,
       signalData: {
         dbfs: event.dbfs,
         peakFrequencyHz: event.peakFrequencyHz,
@@ -785,12 +786,21 @@ export default function App() {
       audioId: audioBlob ? `audio_${evidenceId}` : undefined,
       candidateTranscription: event.candidateTranscription || null,
       confidenceScore: event.confidence,
-      decisionStatus: 'pending',
+      alternativeTranscriptions: event.alternativeTranscriptions,
+      acousticNotes: event.acousticNotes,
+      segmentStartMs: event.segmentStartMs,
+      segmentEndMs: event.segmentEndMs,
+      treatedAudioBlob: event.treatedAudioBlob,
+      decisionStatus: event.investigatorDecision === 'relevant'
+        ? 'confirmed_candidate'
+        : event.investigatorDecision === 'discard'
+        ? 'discarded'
+        : 'pending',
       aiAnalysis: {
         conclusion: event.text,
         confidence: event.confidence,
-        voiceDetected: event.status === 'possible_speech' || !!event.candidateTranscription,
-        acousticAnalysis: `[VAD em Tempo Real] dBFS: ${event.dbfs.toFixed(1)} | Frequência: ${event.peakFrequencyHz} Hz | Provedor: ${event.provider}`,
+        voiceDetected: event.status === 'possible_speech' || event.status === 'probable_transcription' || !!event.candidateTranscription,
+        acousticAnalysis: event.acousticNotes || `[VAD em Tempo Real] dBFS: ${event.dbfs.toFixed(1)} | Frequência: ${event.peakFrequencyHz} Hz | Provedor: ${event.provider}`,
         alternativeHypotheses: event.alternativeHypotheses || ['Ruído acústico do ambiente', 'Interferência do transdutor'],
         provider: event.provider,
       },

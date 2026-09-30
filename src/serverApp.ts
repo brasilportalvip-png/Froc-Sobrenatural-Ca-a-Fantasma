@@ -370,7 +370,7 @@ app.post('/api/tools/session/start', authenticateFirebaseUser, async (req: any, 
 app.post('/api/tools/session/renew', authenticateFirebaseUser, async (req: any, res: Response) => {
   try {
     const uid = req.user.uid;
-    const { toolSessionId } = req.body || {};
+    const { toolSessionId, expectedExpiresAt } = req.body || {};
     const requestId = req.headers['x-request-id']?.toString() || req.body?.requestId || crypto.randomUUID();
 
     if (!toolSessionId || typeof toolSessionId !== 'string') {
@@ -381,7 +381,8 @@ app.post('/api/tools/session/renew', authenticateFirebaseUser, async (req: any, 
       return res.status(429).json({ error: 'Aguarde antes de renovar novamente.' });
     }
 
-    const result = await renewToolSession(uid, toolSessionId, requestId);
+    const expNum = typeof expectedExpiresAt === 'number' ? expectedExpiresAt : undefined;
+    const result = await renewToolSession(uid, toolSessionId, requestId, expNum);
     res.json({
       success: true,
       session: result.session,
@@ -542,10 +543,12 @@ app.post('/api/analyze', authenticateFirebaseUser, async (req: any, res: Respons
     const hasSignificantVolume = dbfs > -38;
 
     let candidateTranscription: string | null = null;
-    let conclusion = hasAudioData
+    let conclusion = hasAudioData && hasSignificantVolume && isVoiceBand
+      ? 'Possível atividade vocal detectada, porém a interpretação linguística por IA está indisponível.'
+      : hasAudioData
       ? 'Áudio analisado pelo motor espectral local (Froc DSP). Nenhuma resposta ou fonema inteligível identificado.'
       : 'Consulta registrada sem amostra de áudio anexada. Nenhuma emissão acústica examinada.';
-    let confidence = 0.05;
+    let confidence = hasAudioData && hasSignificantVolume && isVoiceBand ? 0.35 : 0.05;
     const alternativeHypotheses = [
       'Ruído térmico do transdutor do microfone',
       'Variação normal do ruído de fundo ambiente',
@@ -553,8 +556,6 @@ app.post('/api/analyze', authenticateFirebaseUser, async (req: any, res: Respons
     ];
 
     if (hasAudioData && hasSignificantVolume && isVoiceBand) {
-      conclusion = 'Sinal com energia na faixa vocal (250Hz–3.5kHz), porém sem inteligibilidade para transcrição fonética segura.';
-      confidence = 0.35;
       alternativeHypotheses.unshift('Voz distante de pessoa no local ou vazamento acústico externo');
     }
 
@@ -563,6 +564,12 @@ app.post('/api/analyze', authenticateFirebaseUser, async (req: any, res: Respons
       conclusion,
       confidence,
       voiceDetected: hasAudioData && hasSignificantVolume && isVoiceBand,
+      segmentStartMs: req.body?.segmentStartMs || 0,
+      segmentEndMs: req.body?.segmentEndMs || 3600,
+      alternativeTranscriptions: [],
+      acousticNotes: hasAudioData
+        ? `[Medição Real DSP] dBFS: ${dbfs.toFixed(1)} | Frequência de pico: ${peakHz}Hz | Banda de fala: ${isVoiceBand ? 'Sim' : 'Não'}`
+        : 'Nenhum arquivo de áudio enviado para análise espectral.',
       acousticAnalysis: hasAudioData
         ? `[Medição Real DSP] dBFS: ${dbfs.toFixed(1)} | Frequência de pico: ${peakHz}Hz | Banda de fala: ${isVoiceBand ? 'Sim' : 'Não'}`
         : 'Nenhum arquivo de áudio enviado para análise espectral.',
@@ -585,33 +592,50 @@ app.post('/api/analyze', authenticateFirebaseUser, async (req: any, res: Respons
   try {
     const prompt = `
 Você é o analisador pericial da estação "Froc Sobrenatural Caça Fantasma".
-Sua função é avaliar com ceticismo metodológico, análise espectral e física uma amostra de áudio e telemetria.
+Sua função é atuar como "INTÉRPRETE DE POSSÍVEIS FALAS CAPTADAS" e avaliador de sinal acústico com rigor metodológico, análise espectral e física.
 
 DIRETRIZES FUNDAMENTAIS DE RIGOR FORENSE:
-1. NUNCA invente palavras, respostas, nomes ou identidades onde há apenas ruído, clique, sussurro inaudível ou estática.
-2. Se o áudio for ausente, inaudível ou ruído aleatório, a conclusão DEVE ser: "Nenhuma resposta identificada." e candidateTranscription DEVE ser null.
-3. Se a pergunta for "Quem está aí?" ou similar, e for audível um nome claro:
+1. A IA NÃO DEVE AFIRMAR SOB HIPÓTESE ALGUMA que a fala veio de espírito, fantasma ou entidade. Analise exclusivamente o sinal acústico gravado.
+2. NUNCA invente palavras, respostas, nomes ou frases onde há apenas ruído ambiente, respiração, clique, sussurro indistinto ou estática. Silêncio deve permanecer silêncio. Ruído de fundo não deve produzir texto fictício.
+3. Classificação estrita de inteligibilidade e confiança:
+   - confiança >= 0.75: fala de alta inteligibilidade acústica.
+   - confiança 0.50 a 0.74: interpretação provável.
+   - confiança 0.30 a 0.49: interpretação preliminar com dúvida relevante.
+   - confiança < 0.30: NÃO apresentar palavra como se tivesse sido pronunciada. Nesse caso, candidateTranscription DEVE ser null.
+4. Se o áudio for ausente, inaudível ou ruído aleatório:
+   - candidateTranscription DEVE ser null.
+   - voiceDetected DEVE ser false.
+   - conclusion DEVE ser: "Nenhuma resposta inteligível identificada."
+5. Quando houver dúvida fonética razoável, forneça outras interpretações possíveis em "alternativeTranscriptions": [{"text": string, "confidence": number}].
+6. "acousticNotes": descreva sucintamente as propriedades acústicas observadas (ex: "Voz fraca com maior energia entre 500Hz e 1800Hz").
+7. Se a pergunta feita pelo investigador for sobre identificação ou nome ("Qual seu nome?", "Quem está aqui?", etc.) e for audível um padrão vocal relevante:
    - possibleName: {"name": "Nome", "segmentTime": "mm:ss-mm:ss", "verified": false}
-   - conclusion: "Possível nome: [Nome] · fonte: áudio · trecho: [mm:ss–mm:ss] · ainda não verificado"
+   - conclusion: "Possível nome ouvido: [Nome] · confiança: [XX%] · status: NÃO VERIFICADO. A origem da voz não foi determinada."
    - NUNCA declare "espírito identificado" ou "entidade respondeu".
-4. Indique sempre a hipótese nula e causas físicas (fiação, pareidolia, ruído de vento, compressão digital).
-5. O score de confiança deve ser estritamente entre 0.00 e 1.00.
+8. Indique sempre causas físicas em "alternativeHypotheses" (voz humana distante, televisão/rádio no local, eco, pareidolia auditiva, ruído de compressão digital, ruído térmico).
+9. O score de confiança deve ser estritamente entre 0.00 e 1.00.
 
 DADOS DA AMOSTRA:
-- Pergunta: "${question}"
+- Pergunta / Contexto: "${question}"
 - Telemetria de Sensores: ${JSON.stringify(sensorContext || {})}
 - Métricas Autodeclaradas pelo Dispositivo: ${JSON.stringify(audioMetrics || {})}
 
 FORMATO JSON OBRIGATÓRIO:
 {
+  "voiceDetected": boolean,
   "candidateTranscription": null ou string,
+  "confidence": number,
+  "segmentStartMs": number,
+  "segmentEndMs": number,
+  "alternativeTranscriptions": [
+    {"text": string, "confidence": number}
+  ],
+  "acousticNotes": string,
+  "alternativeHypotheses": string[],
   "possibleName": null ou {"name": string, "segmentTime": string, "verified": false},
   "controlQuestionSuggestion": string,
-  "voiceDetected": boolean,
-  "confidence": number,
   "conclusion": string,
-  "acousticAnalysis": string,
-  "alternativeHypotheses": string[]
+  "acousticAnalysis": string
 }
 `;
 
@@ -641,14 +665,14 @@ FORMATO JSON OBRIGATÓRIO:
       throw new Error('Resposta de análise inválida.');
     }
 
-    // Normalização e validação de schema rigorosa (NUNCA inventar transcrição com baixa confiança)
-    if (!parsed.voiceDetected || typeof parsed.confidence !== 'number' || parsed.confidence < 0.4 || !hasAudioData) {
+    // Normalização e validação de schema rigorosa (NUNCA inventar transcrição com baixa confiança ou ruído)
+    if (!parsed.voiceDetected || typeof parsed.confidence !== 'number' || parsed.confidence < 0.30 || !hasAudioData) {
       parsed.candidateTranscription = null;
       if (!hasAudioData) {
         parsed.voiceDetected = false;
         parsed.conclusion = 'Consulta registrada sem amostra de áudio anexada.';
       } else if (parsed.voiceDetected) {
-        parsed.conclusion = 'Trecho vocal detectado, mas sem inteligibilidade suficiente.';
+        parsed.conclusion = 'Trecho vocal detectado, mas sem inteligibilidade suficiente para transcrição.';
       } else {
         parsed.conclusion = 'Nenhuma fala inteligível identificada.';
       }
@@ -660,8 +684,24 @@ FORMATO JSON OBRIGATÓRIO:
     }
     parsed.confidence = Math.max(0, Math.min(1, Number(parsed.confidence) || 0));
 
+    if (!Array.isArray(parsed.alternativeTranscriptions)) {
+      parsed.alternativeTranscriptions = [];
+    } else {
+      parsed.alternativeTranscriptions = parsed.alternativeTranscriptions
+        .filter((a: any) => a && typeof a.text === 'string' && a.text.trim())
+        .map((a: any) => ({
+          text: a.text.trim(),
+          confidence: Math.max(0, Math.min(1, Number(a.confidence) || 0)),
+        }));
+    }
+    if (typeof parsed.acousticNotes !== 'string') {
+      parsed.acousticNotes = `[Análise Pericial] dBFS: ${(audioMetrics?.dbfs || -60).toFixed(1)} | Pico: ${audioMetrics?.peakFrequencyHz || 0} Hz`;
+    }
+
     const finalResponse = {
       ...parsed,
+      segmentStartMs: parsed.segmentStartMs || req.body?.segmentStartMs || 0,
+      segmentEndMs: parsed.segmentEndMs || req.body?.segmentEndMs || 3600,
       provider: `${cascadeResult.modelUsed} (Análise Forense)`,
       modelUsed: cascadeResult.modelUsed,
       executionTimeMs: cascadeResult.executionTimeMs,
@@ -689,15 +729,23 @@ FORMATO JSON OBRIGATÓRIO:
     const isVoiceBand = peakHz >= 250 && peakHz <= 3500;
     const hasSignificantVolume = dbfs > -38;
 
+    const localConclusion = hasAudioData && hasSignificantVolume && isVoiceBand
+      ? 'Possível atividade vocal detectada, porém a interpretação linguística por IA está indisponível.'
+      : hasAudioData
+      ? 'Áudio analisado pelo motor espectral local (Froc DSP). Nenhuma fala inteligível identificada.'
+      : 'Consulta registrada sem amostra de áudio anexada.';
+
     return res.status(200).json({
       candidateTranscription: null,
       voiceDetected: hasAudioData && hasSignificantVolume && isVoiceBand,
       confidence: hasAudioData && hasSignificantVolume && isVoiceBand ? 0.35 : 0.05,
-      conclusion: hasAudioData && hasSignificantVolume && isVoiceBand
-        ? 'Sinal com energia na faixa vocal (250Hz–3.5kHz), porém sem inteligibilidade para transcrição fonética segura.'
-        : hasAudioData
-        ? 'Áudio analisado pelo motor espectral local (Froc DSP). Nenhuma emissão fonética identificada.'
-        : 'Consulta registrada sem amostra de áudio anexada.',
+      conclusion: localConclusion,
+      segmentStartMs: req.body?.segmentStartMs || 0,
+      segmentEndMs: req.body?.segmentEndMs || 3600,
+      alternativeTranscriptions: [],
+      acousticNotes: hasAudioData
+        ? `[Medição Real DSP] Volume dBFS: ${dbfs.toFixed(1)} | Pico: ${peakHz}Hz | Banda de fala: ${isVoiceBand ? 'Sim' : 'Não'}`
+        : 'Sem áudio anexado.',
       acousticAnalysis: hasAudioData
         ? `[Medição Real DSP] dBFS: ${dbfs.toFixed(1)} | Frequência de pico: ${peakHz}Hz | Banda de fala: ${isVoiceBand ? 'Sim' : 'Não'}`
         : 'Nenhum arquivo de áudio enviado para análise espectral.',

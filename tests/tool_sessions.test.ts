@@ -137,40 +137,53 @@ test('Concorrência Multi-Aba: Duas renovações concorrentes com requestIds dis
   let expiresAt = 1000000;
   let lastRenewedFromExpiresAt: number | undefined = undefined;
 
-  // Função simulando a transação atômica do engine
-  const executeAtomicRenew = async (requestId: string) => {
-    // 1. Simular latência de leitura
-    await new Promise((r) => setTimeout(r, 10));
+  // Fila de transação serializada (simulando adminDb.runTransaction do Firestore)
+  let txQueue = Promise.resolve();
+  const runTransaction = <T>(fn: () => Promise<T>): Promise<T> => {
+    const next = txQueue.then(fn, fn);
+    txQueue = next.then(() => {}, () => {});
+    return next;
+  };
 
-    // Se já foi renovado a partir deste mesmo expiresAt, retorna idempotente sem debitar
-    if (lastRenewedFromExpiresAt === expiresAt) {
+  // Função simulando a transação atômica do engine com deduplicação de ciclo
+  const executeAtomicRenew = (requestId: string, expectedExpiresAt: number) => {
+    return runTransaction(async () => {
+      // 1. Simular latência de leitura
+      await new Promise((r) => setTimeout(r, 10));
+
+      // Se já foi renovado a partir deste mesmo expiresAt, retorna idempotente sem debitar
+      if (lastRenewedFromExpiresAt === expectedExpiresAt || expiresAt > expectedExpiresAt) {
+        return {
+          success: true,
+          alreadyRenewed: true,
+          balanceAfter: userBalance,
+          renewalCount,
+        };
+      }
+
+      // Débito atômico de 5 créditos
+      userBalance -= 5;
+      renewalsDebited++;
+      renewalCount++;
+      lastRenewedFromExpiresAt = expectedExpiresAt;
+      expiresAt += 240000;
+
       return {
         success: true,
-        alreadyRenewed: true,
+        alreadyRenewed: false,
         balanceAfter: userBalance,
         renewalCount,
       };
-    }
-
-    // Débito atômico de 5 créditos
-    userBalance -= 5;
-    renewalsDebited++;
-    renewalCount++;
-    lastRenewedFromExpiresAt = expiresAt;
-    expiresAt += 240000;
-
-    return {
-      success: true,
-      alreadyRenewed: false,
-      balanceAfter: userBalance,
-      renewalCount,
-    };
+    });
   };
+
+  // Ambas as abas observaram a sessão expirando no timestamp 1000000
+  const observedExpiresAt = expiresAt;
 
   // Disparar duas abas concorrentes com requestIds diferentes tentando renovar o mesmo ciclo
   const [resTabA, resTabB] = await Promise.all([
-    executeAtomicRenew('tabA_req_123'),
-    executeAtomicRenew('tabB_req_456'),
+    executeAtomicRenew('tabA_req_123', observedExpiresAt),
+    executeAtomicRenew('tabB_req_456', observedExpiresAt),
   ]);
 
   // Exatamente UMA cobrança de 5 créditos

@@ -175,7 +175,8 @@ export async function startToolSession(
 export async function renewToolSession(
   uid: string,
   toolSessionId: string,
-  requestId: string
+  requestId: string,
+  expectedExpiresAt?: number
 ): Promise<RenewSessionResult> {
   const walletRef = adminDb.collection('wallets').doc(uid);
   const toolSessionRef = adminDb.collection('toolSessions').doc(toolSessionId);
@@ -203,11 +204,34 @@ export async function renewToolSession(
       };
     }
 
-    // Proteção de concorrência autoritativa no Firestore (Multi-aba / Múltiplas instâncias serverless):
-    // Se duas abas ou requisições concorrentes tentarem renovar o MESMO ciclo de expiração (baseTime / expiresAt),
-    // a segunda transação detecta que lastRenewedFromExpiresAt já foi avançado para esse ciclo e retorna idempotente sem debitar.
     const currentExpiresAt = session.expiresAt || 0;
-    if (session.lastRenewedFromExpiresAt && session.lastRenewedFromExpiresAt === currentExpiresAt) {
+    const now = Date.now();
+
+    // Proteção de concorrência autoritativa no Firestore (Multi-aba / Múltiplas instâncias serverless):
+    // 1. Se expectedExpiresAt foi passado (o expiresAt que a aba observou ao tentar renovar):
+    // Se a sessão já foi estendida além disso ou se lastRenewedFromExpiresAt coincide com expectedExpiresAt,
+    // significa que outra aba concorrente já renovou este ciclo. Retorna idempotente sem debitar novamente.
+    if (
+      typeof expectedExpiresAt === 'number' &&
+      expectedExpiresAt > 0 &&
+      (currentExpiresAt > expectedExpiresAt || session.lastRenewedFromExpiresAt === expectedExpiresAt)
+    ) {
+      const wSnap = await t.get(walletRef);
+      const wData = wSnap.data() as UserWallet;
+      return {
+        success: true,
+        session,
+        balanceAfter: wData?.balance ?? 0,
+      };
+    }
+
+    // 2. Proteção heurística para corrida sem expectedExpiresAt:
+    // Se a sessão acabou de ser renovada há menos de 10s e já tem expiração segura (> 60s):
+    if (
+      session.lastRenewedAt &&
+      now - session.lastRenewedAt < 10000 &&
+      currentExpiresAt > now + 60000
+    ) {
       const wSnap = await t.get(walletRef);
       const wData = wSnap.data() as UserWallet;
       return {
@@ -231,7 +255,6 @@ export async function renewToolSession(
       throw new Error('INSUFFICIENT_BALANCE');
     }
 
-    const now = Date.now();
     const newBalance = wallet.balance - cost;
     const newSpent = (wallet.spentTotal || 0) + cost;
 

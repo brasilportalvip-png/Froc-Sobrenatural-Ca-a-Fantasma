@@ -249,6 +249,7 @@ export const ToolSessionProvider: React.FC<{ children: React.ReactNode }> = ({ c
           body: JSON.stringify({
             toolSessionId: currentSession.toolSessionId,
             requestId,
+            expectedExpiresAt: currentSession.expiresAt,
           }),
         });
 
