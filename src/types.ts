@@ -485,6 +485,15 @@ export interface FrocMoment {
   provider?: string;
   investigatorDecision?: 'relevant' | 'inconclusive' | 'discard';
   evidenceId?: string;
+  rawAudioMetrics?: {
+    dbfs?: number;
+    rms?: number;
+    peakFrequencyHz?: number;
+    isVoiceBand?: boolean;
+  };
+  telemetryAtStart?: any;
+  telemetryAtEnd?: any;
+  sensorContextSnapshot?: any;
   reanalysisResults?: Array<{
     candidateTranscription?: string | null;
     confidence: number;
@@ -497,7 +506,7 @@ export interface TimelineMarker {
   id: string;
   timestampMs: number;
   relativeTimeFormatted: string;
-  type: 'question' | 'speech' | 'magnetic' | 'moment' | 'visual';
+  type: 'question' | 'speech' | 'magnetic' | 'moment' | 'visual' | 'ouija' | 'evidence';
   label: string;
   summary: string;
   relevanceScore: number;

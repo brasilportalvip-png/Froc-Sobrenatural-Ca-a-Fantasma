@@ -50,7 +50,7 @@ export const AudioVisualizerHero: React.FC<Props> = ({
       // Parâmetros extraídos da telemetria real (sem fake random)
       const dbfsNorm = Math.max(0, Math.min(1, (audioMetrics.dbfs + 80) / 60)); // 0 a 1
       const rmsNorm = Math.max(0, Math.min(1, audioMetrics.rms * 10));
-      const motion = Math.min(2, sensorState.motion?.magnitude || 0);
+      const motion = Math.min(2, sensorState.motion?.magnitude ?? 0);
 
       const baseRadius = Math.min(width, height) * 0.28;
       const pulseRadius = baseRadius + dbfsNorm * 28 + rmsNorm * 22;
@@ -198,10 +198,10 @@ export const AudioVisualizerHero: React.FC<Props> = ({
           </span>
         </div>
 
-        {/* Índice de Atividade FROC */}
+        {/* Índice de Atividade Instrumental */}
         <div className="flex items-center gap-1.5" title={activityExplanation}>
           <span className="text-[10px] font-mono uppercase tracking-wider text-slate-400 hidden xs:inline">
-            Índice de Atividade:
+            Atividade Instrumental:
           </span>
           <span
             className={`px-2.5 py-0.5 rounded-full text-[11px] font-mono font-bold border transition ${activityColor}`}

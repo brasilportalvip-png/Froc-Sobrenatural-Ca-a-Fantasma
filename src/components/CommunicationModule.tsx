@@ -74,6 +74,7 @@ interface Props {
     audioCandidateBlob?: Blob
   ) => Promise<EvidenceItem | null>;
   onSaveLiveCaptionEvidence?: (item: LiveCaptionEvent, audioBlob?: Blob) => Promise<void>;
+  onSaveFrocMomentEvidence?: (moment: FrocMoment) => Promise<void>;
   onGetAudioChunk?: (durationMs?: number) => Promise<{ blob: Blob; mimeType: string } | null>;
   onNavigateToEvidence: (evidenceId: string) => void;
   onUpdateEvidenceDecision?: (evidenceId: string, status: 'interference_marked' | 'confirmed_candidate' | 'discarded') => Promise<void>;
@@ -97,6 +98,7 @@ export const CommunicationModule: React.FC<Props> = ({
   evidenceList,
   onAddQuestionEvidence,
   onSaveLiveCaptionEvidence,
+  onSaveFrocMomentEvidence,
   onGetAudioChunk,
   onNavigateToEvidence,
   onUpdateEvidenceDecision,
@@ -848,52 +850,41 @@ export const CommunicationModule: React.FC<Props> = ({
         if (result.candidateTranscription) {
           const currentSession = activeSessionRef.current;
           const completionTime = Date.now();
-          const elapsed = currentSession ? Math.max(0, completionTime - currentSession.startTime) : 0;
-          const timeFormatted = LiveCaptionsEngine.formatRelativeTime(elapsed);
-          const secsAfter = Math.max(1, Math.round((completionTime - now) / 1000));
-          const responseMoment: FrocMoment = {
-            id: `moment_q_${result.id}`,
+          const responseMoment = CorrelationEngine.correlateQuestionResponse({
             sessionId: currentSession?.id || 'session',
-            timestampMs: completionTime,
-            relativeTimeFormatted: timeFormatted,
-            title: 'Possível Resposta à Pergunta',
-            description: `Possível fala captada ${secsAfter} segundos após sua pergunta "${q}": "${result.candidateTranscription}"`,
-            type: 'post_question_speech',
-            signalsSummary: {
-              audioDeltaDbfs: result.signalData?.dbfs || -35,
-              peakFrequencyHz: result.signalData?.peakFrequencyHz || 800,
-              magneticDeltaUt: sensorStateRef.current.magnetometer?.available ? sensorStateRef.current.magnetometer.delta : 0,
-              motionMagnitude: sensorStateRef.current.motion?.available ? sensorStateRef.current.motion.magnitude : 0,
-              isDeviceStable: (sensorStateRef.current.motion?.magnitude || 0) <= 0.8,
-              postQuestionElapsedSec: secsAfter,
-            },
-            coincidingSignalsCount: 2,
-            confidenceScore: result.confidenceScore || 0.75,
-            candidateTranscription: result.candidateTranscription,
-            provider: result.aiAnalysis?.provider || 'IA + DSP Correlacionado',
-            questionContext: q,
+            questionText: q,
             questionTimestampMs: now,
-            secondsAfterQuestion: secsAfter,
-            audioBlob: audioBlob,
-            alternativeHypotheses: result.aiAnalysis?.alternativeHypotheses || ['Variação acústica natural'],
-            reanalysisResults: [],
-          };
+            responseTimestampMs: completionTime,
+            resultId: result.id,
+            candidateTranscription: result.candidateTranscription,
+            confidenceScore: typeof result.confidenceScore === 'number' ? result.confidenceScore : undefined,
+            signalData: result.signalData,
+            sensorState: sensorStateRef.current,
+            recentTelemetry: recentTelemetryRef.current,
+            sessionStartTime: currentSession?.startTime || now,
+            audioBlob,
+            alternativeHypotheses: result.aiAnalysis?.alternativeHypotheses,
+            provider: result.aiAnalysis?.provider,
+            acousticNotes: result.acousticNotes,
+          });
 
-          setFrocMoments((prev) => [responseMoment, ...prev.slice(0, 49)]);
-          setTimelineMarkers((prev) => [
-            ...prev,
-            {
-              id: `mark_${responseMoment.id}`,
-              timestampMs: completionTime,
-              relativeTimeFormatted: timeFormatted,
-              type: 'moment',
-              label: 'Resposta Registrada',
-              summary: `"${result.candidateTranscription}" (${secsAfter}s após a pergunta)`,
-              relevanceScore: 2,
-              momentId: responseMoment.id,
-            },
-          ]);
-          setLastQuestionNotice(`Possível fala captada ${secsAfter} segundos após sua pergunta: "${result.candidateTranscription}"`);
+          if (responseMoment) {
+            setFrocMoments((prev) => [responseMoment, ...prev.slice(0, 49)]);
+            setTimelineMarkers((prev) => [
+              ...prev,
+              {
+                id: `mark_${responseMoment.id}`,
+                timestampMs: completionTime,
+                relativeTimeFormatted: responseMoment.relativeTimeFormatted,
+                type: 'moment',
+                label: 'Resposta Registrada',
+                summary: `"${result.candidateTranscription}" (${responseMoment.secondsAfterQuestion ?? 0}s após a pergunta)`,
+                relevanceScore: responseMoment.coincidingSignalsCount,
+                momentId: responseMoment.id,
+              },
+            ]);
+            setLastQuestionNotice(responseMoment.description);
+          }
         }
       }
     } catch {
@@ -927,7 +918,7 @@ export const CommunicationModule: React.FC<Props> = ({
       visualCapturesCount: evidenceList.filter((e) => e.category === 'photo_capture').length,
       maxMagneticDeltaUt: Math.max(
         0,
-        ...recentTelemetryRef.current.map((t) => Math.abs(t.magneticDeltaUt || 0))
+        ...recentTelemetryRef.current.map((t) => Math.abs(t.magneticDeltaUt ?? 0))
       ),
     });
     setSessionSummary(summary);
@@ -935,17 +926,27 @@ export const CommunicationModule: React.FC<Props> = ({
   };
 
   const handleSaveMomentEvidence = async (moment: FrocMoment) => {
+    if (onSaveFrocMomentEvidence) {
+      await onSaveFrocMomentEvidence(moment);
+      setSavedMomentIds((prev) => ({ ...prev, [moment.id]: true }));
+      return;
+    }
+
     if (onSaveLiveCaptionEvidence && moment.audioBlob) {
-      const fakeEvent: LiveCaptionEvent = {
+      const normalizedEvent: LiveCaptionEvent = {
         id: `ev_${moment.id}`,
         timestampFormatted: moment.relativeTimeFormatted,
         timestampMs: moment.timestampMs,
-        status: 'probable_transcription',
+        status: moment.candidateTranscription ? 'probable_transcription' : 'possible_speech',
         text: moment.description,
-        candidateTranscription: moment.candidateTranscription || null,
-        confidence: moment.confidenceScore || 0.6,
-        dbfs: moment.signalsSummary.audioDeltaDbfs || -40,
-        peakFrequencyHz: moment.signalsSummary.peakFrequencyHz || 800,
+        candidateTranscription: moment.candidateTranscription ?? null,
+        confidence: typeof moment.confidenceScore === 'number' ? moment.confidenceScore : 0,
+        dbfs: typeof moment.rawAudioMetrics?.dbfs === 'number'
+          ? moment.rawAudioMetrics.dbfs
+          : (typeof moment.signalsSummary.audioDeltaDbfs === 'number' ? moment.signalsSummary.audioDeltaDbfs : -60),
+        peakFrequencyHz: typeof moment.rawAudioMetrics?.peakFrequencyHz === 'number'
+          ? moment.rawAudioMetrics.peakFrequencyHz
+          : (typeof moment.signalsSummary.peakFrequencyHz === 'number' ? moment.signalsSummary.peakFrequencyHz : 0),
         provider: moment.provider || 'FROC Moment Correlated',
         isRelevant: true,
         audioBlob: moment.audioBlob,
@@ -955,7 +956,7 @@ export const CommunicationModule: React.FC<Props> = ({
         alternativeHypotheses: moment.alternativeHypotheses,
         investigatorDecision: moment.investigatorDecision || 'relevant',
       };
-      await onSaveLiveCaptionEvidence(fakeEvent, moment.audioBlob);
+      await onSaveLiveCaptionEvidence(normalizedEvent, moment.audioBlob);
       setSavedMomentIds((prev) => ({ ...prev, [moment.id]: true }));
     }
   };
@@ -976,28 +977,37 @@ export const CommunicationModule: React.FC<Props> = ({
       if (activeToolSessionId) reqHeaders['x-tool-session-id'] = activeToolSessionId;
       reqHeaders['x-request-id'] = `reanalyze_moment_${moment.id}_${Date.now()}`;
 
+      const originalAudioMetrics: Record<string, any> = {};
+      if (typeof moment.rawAudioMetrics?.dbfs === 'number') {
+        originalAudioMetrics.dbfs = moment.rawAudioMetrics.dbfs;
+      }
+      if (typeof moment.rawAudioMetrics?.peakFrequencyHz === 'number') {
+        originalAudioMetrics.peakFrequencyHz = moment.rawAudioMetrics.peakFrequencyHz;
+      }
+      if (typeof moment.rawAudioMetrics?.rms === 'number') {
+        originalAudioMetrics.rms = moment.rawAudioMetrics.rms;
+      }
+      if (typeof moment.rawAudioMetrics?.isVoiceBand === 'boolean') {
+        originalAudioMetrics.isVoiceBand = moment.rawAudioMetrics.isVoiceBand;
+      }
+
       const resp = await fetch('/api/analyze', {
         method: 'POST',
         headers: reqHeaders,
         body: JSON.stringify({
-          question: `Reanálise do momento gravado em ${moment.relativeTimeFormatted}`,
+          question: `Reanálise pericial do momento gravado em ${moment.relativeTimeFormatted}`,
           audioBase64: base64Audio,
           mimeType: moment.audioBlob.type || 'audio/webm',
           toolSessionId: activeToolSessionId,
-          audioMetrics: {
-            dbfs: -35,
-            peakFrequencyHz: moment.signalsSummary.peakFrequencyHz || 800,
-            rms: 0.05,
-            isVoiceBand: true,
-          },
-          sensorContext: sensorStateRef.current,
+          audioMetrics: Object.keys(originalAudioMetrics).length > 0 ? originalAudioMetrics : undefined,
+          sensorContext: moment.sensorContextSnapshot ?? sensorStateRef.current,
         }),
       });
 
       if (resp.ok) {
         const data = await resp.json();
         const ambiguity = LiveCaptionsEngine.detectAmbiguity(
-          { text: moment.candidateTranscription, confidence: moment.confidenceScore || 0 },
+          { text: moment.candidateTranscription, confidence: moment.confidenceScore ?? 0 },
           { text: data.candidateTranscription, confidence: data.confidence }
         );
 

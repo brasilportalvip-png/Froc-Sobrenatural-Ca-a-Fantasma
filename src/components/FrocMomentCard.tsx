@@ -121,9 +121,13 @@ export const FrocMomentCard: React.FC<Props> = ({
             <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-cyan-950/80 border border-cyan-500/30 text-cyan-300">
               {moment.coincidingSignalsCount} SINAIS COINCIDENTES
             </span>
-            {moment.confidenceScore !== undefined && moment.confidenceScore > 0 && (
+            {moment.confidenceScore !== undefined ? (
               <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-emerald-950 border border-emerald-500/40 text-emerald-300">
                 Confiança: {Math.round(moment.confidenceScore * 100)}%
+              </span>
+            ) : (
+              <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-slate-900 border border-slate-800 text-slate-400">
+                Confiança: N/D
               </span>
             )}
           </div>
@@ -164,21 +168,23 @@ export const FrocMomentCard: React.FC<Props> = ({
           <span className="text-cyan-300 font-bold tabular-nums">
             {moment.signalsSummary.audioDeltaDbfs !== undefined
               ? `+${moment.signalsSummary.audioDeltaDbfs.toFixed(1)} dB`
-              : '--'}
+              : 'Dado indisponível'}
           </span>
         </div>
         <div>
           <span className="text-slate-500 block text-[9px] uppercase">Campo Magnético</span>
           <span className="text-amber-300 font-bold tabular-nums">
-            {moment.signalsSummary.magneticDeltaUt !== undefined && moment.signalsSummary.magneticDeltaUt > 0
-              ? `+${moment.signalsSummary.magneticDeltaUt.toFixed(1)} µT`
-              : 'Estável'}
+            {moment.signalsSummary.magneticDeltaUt !== undefined
+              ? (moment.signalsSummary.magneticDeltaUt > 0 ? `+${moment.signalsSummary.magneticDeltaUt.toFixed(1)} µT` : 'Estável (0.0 µT)')
+              : 'Não medido'}
           </span>
         </div>
         <div className="col-span-2 sm:col-span-1">
           <span className="text-slate-500 block text-[9px] uppercase">Movimento do Aparelho</span>
           <span className="text-emerald-300 font-bold">
-            {moment.signalsSummary.isDeviceStable ? 'Estável (Sem impacto)' : 'Em movimento'}
+            {moment.signalsSummary.isDeviceStable !== undefined
+              ? (moment.signalsSummary.isDeviceStable ? 'Estável (Sem impacto)' : 'Em movimento')
+              : 'Não medido'}
           </span>
         </div>
       </div>
@@ -193,7 +199,7 @@ export const FrocMomentCard: React.FC<Props> = ({
           <div className="flex gap-2 flex-wrap mt-1">
             {moment.candidateTranscription && (
               <span className="px-2 py-0.5 bg-black/40 rounded border border-amber-500/40">
-                1: "{moment.candidateTranscription}" ({Math.round((moment.confidenceScore || 0) * 100)}%)
+                1: "{moment.candidateTranscription}" ({typeof moment.confidenceScore === 'number' ? Math.round(moment.confidenceScore * 100) : 'N/D'}%)
               </span>
             )}
             {moment.reanalysisResults.map((r, i) => (
@@ -353,6 +359,38 @@ export const FrocMomentCard: React.FC<Props> = ({
             <p className="text-slate-300 font-sans text-xs mt-0.5">
               {moment.acousticNotes || 'Sinal contido na banda média com elevação de energia concentrada.'}
             </p>
+          </div>
+
+          {/* Telemetria Real Gravada (Sem valores fabricados) */}
+          <div className="grid grid-cols-3 gap-2 text-[10px] font-mono bg-slate-900/60 p-2 rounded border border-slate-800">
+            <div>
+              <span className="text-slate-500 block uppercase">Nível dBFS Real</span>
+              <span className="text-cyan-300 font-bold">
+                {typeof moment.rawAudioMetrics?.dbfs === 'number'
+                  ? `${moment.rawAudioMetrics.dbfs.toFixed(1)} dBFS`
+                  : typeof moment.signalsSummary.audioDeltaDbfs === 'number'
+                  ? `${moment.signalsSummary.audioDeltaDbfs.toFixed(1)} dBFS`
+                  : 'Não medido'}
+              </span>
+            </div>
+            <div>
+              <span className="text-slate-500 block uppercase">Frequência Pico</span>
+              <span className="text-teal-300 font-bold">
+                {typeof moment.rawAudioMetrics?.peakFrequencyHz === 'number'
+                  ? `${moment.rawAudioMetrics.peakFrequencyHz} Hz`
+                  : typeof moment.signalsSummary.peakFrequencyHz === 'number'
+                  ? `${moment.signalsSummary.peakFrequencyHz} Hz`
+                  : 'Não medido'}
+              </span>
+            </div>
+            <div>
+              <span className="text-slate-500 block uppercase">RMS Acústico</span>
+              <span className="text-emerald-300 font-bold">
+                {typeof moment.rawAudioMetrics?.rms === 'number'
+                  ? moment.rawAudioMetrics.rms.toFixed(3)
+                  : 'Não medido'}
+              </span>
+            </div>
           </div>
 
           {moment.alternativeHypotheses && moment.alternativeHypotheses.length > 0 && (

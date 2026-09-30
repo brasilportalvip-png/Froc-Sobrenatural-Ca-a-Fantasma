@@ -1,6 +1,6 @@
 import React from 'react';
 import { TimelineMarker } from '../types';
-import { Radio, HelpCircle, Compass, Sparkles, Camera } from 'lucide-react';
+import { Radio, HelpCircle, Compass, Sparkles, Camera, ShieldCheck, Flame } from 'lucide-react';
 
 interface Props {
   markers: TimelineMarker[];
@@ -29,6 +29,10 @@ export const SessionTimeline: React.FC<Props> = ({
         return Compass;
       case 'visual':
         return Camera;
+      case 'ouija':
+        return Flame;
+      case 'evidence':
+        return ShieldCheck;
       case 'moment':
       default:
         return Sparkles;
@@ -45,6 +49,10 @@ export const SessionTimeline: React.FC<Props> = ({
         return 'bg-amber-500 text-amber-100 border-amber-300';
       case 'visual':
         return 'bg-teal-500 text-teal-100 border-teal-300';
+      case 'ouija':
+        return 'bg-indigo-500 text-indigo-100 border-indigo-300';
+      case 'evidence':
+        return 'bg-emerald-500 text-emerald-100 border-emerald-300';
       case 'moment':
       default:
         return 'bg-rose-500 text-rose-100 border-rose-300 animate-pulse';
@@ -108,6 +116,18 @@ export const SessionTimeline: React.FC<Props> = ({
           <span className="flex items-center gap-1">
             <span className="w-2 h-2 rounded-full bg-amber-400 inline-block" />
             <span>Magnetismo</span>
+          </span>
+          <span className="flex items-center gap-1">
+            <span className="w-2 h-2 rounded-full bg-teal-400 inline-block" />
+            <span>Visual</span>
+          </span>
+          <span className="flex items-center gap-1">
+            <span className="w-2 h-2 rounded-full bg-indigo-400 inline-block" />
+            <span>Ouija</span>
+          </span>
+          <span className="flex items-center gap-1">
+            <span className="w-2 h-2 rounded-full bg-emerald-400 inline-block" />
+            <span>Evidência</span>
           </span>
           <span className="flex items-center gap-1">
             <span className="w-2 h-2 rounded-full bg-rose-500 inline-block" />
