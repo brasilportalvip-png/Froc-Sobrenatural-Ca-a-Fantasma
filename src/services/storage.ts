@@ -90,7 +90,31 @@ export async function deleteSession(sessionId: string): Promise<void> {
   });
 }
 
+/**
+ * Computa o hash criptográfico SHA-256 de um Blob para garantia de integridade forense
+ */
+export async function calculateBlobSha256(blob: Blob): Promise<string> {
+  try {
+    const arrayBuffer = await blob.arrayBuffer();
+    if (typeof crypto !== 'undefined' && crypto.subtle && crypto.subtle.digest) {
+      const hashBuffer = await crypto.subtle.digest('SHA-256', arrayBuffer);
+      const hashArray = Array.from(new Uint8Array(hashBuffer));
+      return hashArray.map((b) => b.toString(16).padStart(2, '0')).join('');
+    }
+  } catch (err) {
+    console.warn('[Storage] Falha ao computar SHA-256:', err);
+  }
+  return '';
+}
+
 export async function saveEvidenceItem(item: EvidenceItem, audioBlob?: Blob): Promise<void> {
+  if (audioBlob && !item.originalAudioSha256) {
+    const hash = await calculateBlobSha256(audioBlob);
+    if (hash) {
+      item.originalAudioSha256 = hash;
+    }
+  }
+
   const db = await openDB();
   return new Promise((resolve, reject) => {
     const stores = audioBlob ? ['evidence', 'audio_blobs'] : ['evidence'];

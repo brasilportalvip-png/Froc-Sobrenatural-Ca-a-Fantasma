@@ -196,6 +196,8 @@ export class LiveCaptionsEngine {
   /**
    * Combina contextualmente frases de trechos consecutivos contíguos no tempo,
    * preservando os segmentos originais para auditoria forense.
+   * Permite continuidade de falas consecutivas captadas na sessão (intervalo realista de até 25s),
+   * garantindo que pausas naturais ou cooldowns de análise não inviabilizem frases compostas.
    */
   public static combineConsecutivePhrases(events: LiveCaptionEvent[]): LiveCaptionEvent[] {
     if (events.length <= 1) return [...events];
@@ -207,12 +209,12 @@ export class LiveCaptionsEngine {
       const current = events[i];
       const next = events[i + 1];
 
-      // Se há um próximo evento com continuidade temporal (< 4.5s) e ambos possuem candidatos válidos
+      // Se há um próximo evento com continuidade temporal coerente (até 25s) e ambos possuem transcrições válidas
       if (
         next &&
         current.candidateTranscription &&
         next.candidateTranscription &&
-        Math.abs(current.timestampMs - next.timestampMs) <= 4500 &&
+        Math.abs(current.timestampMs - next.timestampMs) <= 25000 &&
         current.confidence >= 0.35 &&
         next.confidence >= 0.35 &&
         !current.isCombinedPhrase &&

@@ -59,6 +59,21 @@ export interface EvidenceItem {
   segmentStartMs?: number;
   segmentEndMs?: number;
   treatedAudioBlob?: Blob;
+  originalAudioSha256?: string;
+  telemetryAtStart?: {
+    timestamp: number;
+    dbfs: number;
+    peakFrequencyHz: number;
+    rms?: number;
+    sensors?: any;
+  };
+  telemetryAtEnd?: {
+    timestamp: number;
+    dbfs: number;
+    peakFrequencyHz: number;
+    rms?: number;
+    sensors?: any;
+  };
   decisionStatus?: 'pending' | 'interference_marked' | 'confirmed_candidate' | 'discarded';
 
   // Blind independent review
@@ -394,6 +409,21 @@ export interface LiveCaptionEvent {
   isRelevant: boolean;
   audioBlob?: Blob;
   treatedAudioBlob?: Blob;
+  originalAudioSha256?: string;
+  telemetryAtStart?: {
+    timestamp: number;
+    dbfs: number;
+    peakFrequencyHz: number;
+    rms?: number;
+    sensors?: any;
+  };
+  telemetryAtEnd?: {
+    timestamp: number;
+    dbfs: number;
+    peakFrequencyHz: number;
+    rms?: number;
+    sensors?: any;
+  };
   alternativeTranscriptions?: AlternativeTranscription[];
   alternativeHypotheses?: string[];
   acousticNotes?: string;
@@ -408,3 +438,88 @@ export interface LiveCaptionEvent {
   isAmbiguous?: boolean;
   investigatorDecision?: 'relevant' | 'inconclusive' | 'discard';
 }
+
+// ----------------------------------------------------
+// Parte 5: FROC Intelligence, Momentos Relevantes e Linha do Tempo
+// ----------------------------------------------------
+
+export type InvestigationExperienceMode = 'simple' | 'advanced';
+
+export type FrocActivityLevel = 'BAIXA' | 'MODERADA' | 'ELEVADA' | 'ALTA';
+
+export type FrocMomentType =
+  | 'voice_candidate'
+  | 'post_question_speech'
+  | 'instrumental_coincidence'
+  | 'magnetic_anomaly'
+  | 'visual_event';
+
+export interface FrocMoment {
+  id: string;
+  sessionId: string;
+  timestampMs: number;
+  relativeTimeFormatted: string; // "00:43"
+  type: FrocMomentType;
+  title: string;
+  description: string;
+  coincidingSignalsCount: number; // e.g. 3
+  signalsSummary: {
+    audioDeltaDbfs?: number;
+    magneticDeltaUt?: number;
+    motionMagnitude?: number;
+    isDeviceStable?: boolean;
+    postQuestionElapsedSec?: number;
+    peakFrequencyHz?: number;
+  };
+  audioBlob?: Blob;
+  treatedAudioBlob?: Blob;
+  candidateTranscription?: string | null;
+  confidenceScore?: number;
+  questionContext?: string;
+  questionTimestampMs?: number;
+  secondsAfterQuestion?: number;
+  alternativeHypotheses?: string[];
+  isAmbiguous?: boolean;
+  alternativeTranscriptions?: Array<{ text: string; confidence: number }>;
+  acousticNotes?: string;
+  provider?: string;
+  investigatorDecision?: 'relevant' | 'inconclusive' | 'discard';
+  evidenceId?: string;
+  reanalysisResults?: Array<{
+    candidateTranscription?: string | null;
+    confidence: number;
+    timestamp: number;
+    provider: string;
+  }>;
+}
+
+export interface TimelineMarker {
+  id: string;
+  timestampMs: number;
+  relativeTimeFormatted: string;
+  type: 'question' | 'speech' | 'magnetic' | 'moment' | 'visual';
+  label: string;
+  summary: string;
+  relevanceScore: number;
+  momentId?: string;
+  evidenceId?: string;
+}
+
+export interface SessionSummary {
+  sessionId: string;
+  sessionTitle: string;
+  startTime: number;
+  endTime: number;
+  durationFormatted: string;
+  durationMs: number;
+  questionsCount: number;
+  possibleSpeechCount: number;
+  correlatedMomentsCount: number;
+  visualCapturesCount: number;
+  maxMagneticDeltaUt: number;
+  peakActivityWindow: string; // e.g. "08:14–08:28"
+  reviewMomentsCount: number;
+  activityLevelAverage: FrocActivityLevel;
+  topMoments: FrocMoment[];
+}
+

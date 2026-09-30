@@ -1,9 +1,28 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { Session, EvidenceItem, SensorState, LiveCaptionEvent, LiveCaptionStatus } from '../types';
+import {
+  Session,
+  EvidenceItem,
+  SensorState,
+  LiveCaptionEvent,
+  LiveCaptionStatus,
+  InvestigationExperienceMode,
+  FrocActivityLevel,
+  FrocMoment,
+  TimelineMarker,
+  SessionSummary,
+} from '../types';
 import { AudioMetrics, AudioEngine } from '../services/audioEngine';
 import { useAuth } from '../services/AuthContext';
 import { useToolSession } from '../services/ToolSessionContext';
 import { LiveCaptionsEngine, ChunkRateLimiter } from '../services/liveCaptionsService';
+import { calculateBlobSha256 } from '../services/storage';
+import { CorrelationEngine, TelemetrySample, QuestionContext } from '../services/correlationEngine';
+import { AudioVisualizerHero } from './AudioVisualizerHero';
+import { FrocMomentCard } from './FrocMomentCard';
+import { SessionTimeline } from './SessionTimeline';
+import { GuidedInvestigationBanner } from './GuidedInvestigationBanner';
+import { SessionSummaryModal } from './SessionSummaryModal';
+import { StartInvestigationHero } from './StartInvestigationHero';
 import {
   Mic,
   MicOff,
@@ -33,12 +52,17 @@ import {
   AlertTriangle,
   Layers,
   Filter,
+  Camera,
+  Sliders,
+  SlidersHorizontal,
+  BookmarkCheck,
+  Eye,
 } from 'lucide-react';
 import { AudioOscilloscope } from './AudioOscilloscope';
 
 interface Props {
   activeSession: Session | null;
-  onStartSession: () => void;
+  onStartSession: () => Promise<any> | void;
   onEndSession: () => void;
   isRecording: boolean;
   onToggleRecording: () => void;
@@ -59,6 +83,7 @@ interface Props {
   hasAudioPermission: boolean;
   onRequestMicPermission: () => Promise<void>;
   hasGemini: boolean;
+  onCalibrateSensors?: () => void;
 }
 
 export const CommunicationModule: React.FC<Props> = ({
@@ -81,6 +106,7 @@ export const CommunicationModule: React.FC<Props> = ({
   hasAudioPermission,
   onRequestMicPermission,
   hasGemini,
+  onCalibrateSensors,
 }) => {
   const { user, wallet, getIdToken, refreshWallet } = useAuth();
   const { getActiveSessionId, isSessionActive, remainingSeconds } = useToolSession();
@@ -88,19 +114,53 @@ export const CommunicationModule: React.FC<Props> = ({
   const isToolSessionActive = isSessionActive('communication');
   const remainingSec = remainingSeconds['communication'] || 0;
 
+  // FROC Intelligence Experience Mode ('simple' [Padrão] vs 'advanced')
+  const [experienceMode, setExperienceMode] = useState<InvestigationExperienceMode>(() => {
+    try {
+      return (localStorage.getItem('froc_experience_mode') as InvestigationExperienceMode) || 'simple';
+    } catch {
+      return 'simple';
+    }
+  });
+
+  const [frocMoments, setFrocMoments] = useState<FrocMoment[]>([]);
+  const [timelineMarkers, setTimelineMarkers] = useState<TimelineMarker[]>([]);
+  const [selectedMarkerId, setSelectedMarkerId] = useState<string | null>(null);
+  const [savedMomentIds, setSavedMomentIds] = useState<Record<string, boolean>>({});
+  const [sessionSummary, setSessionSummary] = useState<SessionSummary | null>(null);
+  const [showGuidedBanner, setShowGuidedBanner] = useState(true);
+  const [guidedStep, setGuidedStep] = useState<1 | 2 | 3 | 4>(1);
+  const [activityLevel, setActivityLevel] = useState<FrocActivityLevel>('BAIXA');
+  const [activityExplanation, setActivityExplanation] = useState<string>(
+    'Índice baixo: ambiente estável e ruído de fundo sem desvios significativos.'
+  );
+  const [lastQuestionNotice, setLastQuestionNotice] = useState<string | null>(null);
+
+  const recentTelemetryRef = useRef<TelemetrySample[]>([]);
+  const recentQuestionsRef = useRef<QuestionContext[]>([]);
+
+  const handleToggleExperienceMode = (mode: InvestigationExperienceMode) => {
+    setExperienceMode(mode);
+    try {
+      localStorage.setItem('froc_experience_mode', mode);
+    } catch {}
+  };
+
   const [questionText, setQuestionText] = useState('');
   const [questionError, setQuestionError] = useState('');
   const [isProcessing, setIsProcessing] = useState(false);
-  const [isListeningSpeech, setIsListeningSpeech] = useState(false);
+  const [isDictatingQuestion, setIsDictatingQuestion] = useState(false);
   const [speechSupported, setSpeechSupported] = useState(false);
-  const [speechRecognitionInstance, setSpeechRecognitionInstance] = useState<any>(null);
+  const [dictationRecogInstance, setDictationRecogInstance] = useState<any>(null);
 
   // Live Captions & VAD State
   const [liveCaptionEvents, setLiveCaptionEvents] = useState<LiveCaptionEvent[]>([]);
   const [liveCaptionStatus, setLiveCaptionStatus] = useState<LiveCaptionStatus>('listening');
+  const [liveCaptionError, setLiveCaptionError] = useState<string | null>(null);
   const [isLiveCaptionsActive, setIsLiveCaptionsActive] = useState(true);
   const [isTransmittingChunk, setIsTransmittingChunk] = useState(false);
-  const isTransmittingChunkRef = useRef(false);
+  // Lock autoritativo compartilhado de gravação/captura de chunks de áudio (Live Captions, Pergunta e Reanálise)
+  const audioChunkLockRef = useRef(false);
   const [analyzingSegmentRange, setAnalyzingSegmentRange] = useState<string | null>(null);
   const [provisionalCaption, setProvisionalCaption] = useState<LiveCaptionEvent | null>(null);
   const [savedCaptionIds, setSavedCaptionIds] = useState<Record<string, boolean>>({});
@@ -154,7 +214,7 @@ export const CommunicationModule: React.FC<Props> = ({
 
   const chatEndRef = useRef<HTMLDivElement | null>(null);
 
-  // Speech Recognition initialization
+  // Speech Recognition initialization for DICTATING QUESTIONS (strictly independent of ambient captions)
   useEffect(() => {
     const SpeechRecognitionClass =
       (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
@@ -162,50 +222,30 @@ export const CommunicationModule: React.FC<Props> = ({
       setSpeechSupported(true);
       const recog = new SpeechRecognitionClass();
       recog.lang = 'pt-BR';
-      recog.continuous = true;
+      recog.continuous = false;
       recog.interimResults = true;
 
       recog.onresult = (event: any) => {
-        let interimText = '';
+        let textResult = '';
         for (let i = event.resultIndex; i < event.results.length; ++i) {
-          if (event.results[i].isFinal) {
-            const finalTxt = event.results[i][0].transcript;
-            setQuestionText((prev) => (prev ? `${prev} ${finalTxt}` : finalTxt));
-          } else {
-            interimText += event.results[i][0].transcript;
-          }
+          textResult += event.results[i][0].transcript;
         }
-        if (interimText.trim()) {
-          const now = Date.now();
-          const elapsed = activeSessionRef.current ? Math.max(0, now - activeSessionRef.current.startTime) : 0;
-          setProvisionalCaption({
-            id: 'provisional_speech',
-            timestampFormatted: LiveCaptionsEngine.formatRelativeTime(elapsed),
-            timestampMs: now,
-            segmentStartMs: elapsed,
-            segmentEndMs: elapsed + 2000,
-            status: 'possible_speech',
-            text: `[PROVISÓRIO] "${interimText}"`,
-            candidateTranscription: interimText,
-            confidence: 0.45,
-            isProvisional: true,
-            dbfs: audioMetricsRef.current.dbfs,
-            peakFrequencyHz: audioMetricsRef.current.peakFrequencyHz,
-            provider: 'Web Speech API (Provisório)',
-            isRelevant: true,
-          });
+        if (textResult.trim()) {
+          // Preenche estritamente o campo da pergunta quando o ditado for explicitamente acionado
+          setQuestionText(textResult.trim());
         }
       };
 
-      recog.onerror = () => {
-        setIsListeningSpeech(false);
+      recog.onerror = (err: any) => {
+        console.warn('[Dictation] Erro no reconhecimento:', err);
+        setIsDictatingQuestion(false);
       };
 
       recog.onend = () => {
-        setIsListeningSpeech(false);
+        setIsDictatingQuestion(false);
       };
 
-      setSpeechRecognitionInstance(recog);
+      setDictationRecogInstance(recog);
     }
   }, []);
 
@@ -219,6 +259,81 @@ export const CommunicationModule: React.FC<Props> = ({
   const activeSessionRef = useRef(activeSession);
   activeSessionRef.current = activeSession;
 
+  // Telemetria contínua (500ms) para correlação e índice de atividade FROC
+  useEffect(() => {
+    if (!activeSession) return;
+    const interval = setInterval(() => {
+      const metrics = audioMetricsRef.current;
+      const sensors = sensorStateRef.current;
+      const now = Date.now();
+
+      const sample: TelemetrySample = {
+        timestampMs: now,
+        dbfs: metrics.dbfs,
+        peakFrequencyHz: metrics.peakFrequencyHz,
+        rms: metrics.rms,
+        magneticDeltaUt: sensors.magnetometer.available ? sensors.magnetometer.delta : 0,
+        motionMagnitude: sensors.motion.available ? sensors.motion.magnitude : 0,
+      };
+
+      recentTelemetryRef.current = [sample, ...recentTelemetryRef.current.slice(0, 29)];
+
+      // Recalcular Índice de Atividade FROC determinístico
+      const last60s = now - 60000;
+      const recentMoments = frocMoments.filter((m) => m.timestampMs >= last60s);
+      const recentSpeech = liveCaptionEvents.filter((e) => e.timestampMs >= last60s);
+      const sensorExcursions = recentTelemetryRef.current.filter((t) => Math.abs(t.magneticDeltaUt) >= 2.0).length;
+
+      const act = CorrelationEngine.calculateActivityIndex({
+        momentsInLast60s: recentMoments,
+        speechEventsInLast60s: recentSpeech,
+        sensorExcursionsCount: sensorExcursions,
+      });
+
+      setActivityLevel(act.level);
+      setActivityExplanation(act.explanation);
+
+      // Registrar marcador de anomalia magnética com aparelho estável se não houver um recente
+      if (Math.abs(sample.magneticDeltaUt) >= 2.5 && sample.motionMagnitude <= 0.8) {
+        const lastMagMarker = timelineMarkers.find(
+          (m) => m.type === 'magnetic' && now - m.timestampMs <= 10000
+        );
+        if (!lastMagMarker) {
+          const elapsed = Math.max(0, now - activeSession.startTime);
+          setTimelineMarkers((prev) => [
+            ...prev,
+            {
+              id: `mag_${now}`,
+              timestampMs: now,
+              relativeTimeFormatted: CorrelationEngine.formatRelativeTime(elapsed),
+              type: 'magnetic',
+              label: 'Magnetômetro',
+              summary: `Oscilação de ${sample.magneticDeltaUt > 0 ? '+' : ''}${sample.magneticDeltaUt.toFixed(1)} µT`,
+              relevanceScore: 1,
+            },
+          ]);
+        }
+      }
+    }, 500);
+
+    return () => clearInterval(interval);
+  }, [activeSession, frocMoments, liveCaptionEvents, timelineMarkers]);
+
+  // Cleanup active audio player on unmount
+  useEffect(() => {
+    return () => {
+      if (activeAudioElementRef.current) {
+        try {
+          activeAudioElementRef.current.pause();
+          if (activeAudioElementRef.current.src && activeAudioElementRef.current.src.startsWith('blob:')) {
+            URL.revokeObjectURL(activeAudioElementRef.current.src);
+          }
+        } catch {}
+        activeAudioElementRef.current = null;
+      }
+    };
+  }, []);
+
   // Monitoramento contínuo de fala (VAD + Envio Seletivo para IA)
   useEffect(() => {
     if (!hasAudioPermission || !isLiveCaptionsActive) {
@@ -228,8 +343,8 @@ export const CommunicationModule: React.FC<Props> = ({
 
     let isDisposed = false;
     const vadInterval = setInterval(async () => {
-      // Usar lock autoritativo local para impedir sobreposição entre ticks do timer de 3200ms e gravações de 3600ms
-      if (isDisposed || isTransmittingChunkRef.current) return;
+      // Usar lock autoritativo compartilhado para impedir sobreposição entre live captions, perguntas e reanálises
+      if (isDisposed || audioChunkLockRef.current) return;
 
       const currentMetrics = audioMetricsRef.current;
       const currentSensors = sensorStateRef.current;
@@ -252,15 +367,28 @@ export const CommunicationModule: React.FC<Props> = ({
 
       // Se temos motor de chunks, sessão ativa de comunicação e créditos/sessão disponível
       if (onGetAudioChunk && isToolSessionActive) {
-        // Bloquear ANTES de disparar onGetAudioChunk
-        isTransmittingChunkRef.current = true;
+        // Bloquear no lock autoritativo compartilhado ANTES de disparar onGetAudioChunk
+        audioChunkLockRef.current = true;
         setIsTransmittingChunk(true);
         setLiveCaptionStatus('analyzing');
+        setLiveCaptionError(null);
 
         const now = Date.now();
         const chunkStartElapsed = currentSession ? Math.max(0, now - currentSession.startTime) : 0;
         const segmentRange = LiveCaptionsEngine.formatSegmentRange(chunkStartElapsed, chunkStartElapsed + 3600);
         setAnalyzingSegmentRange(segmentRange);
+
+        // Snapshot de telemetria próximo ao início da captura
+        const telemetryAtStart = {
+          timestamp: now,
+          dbfs: currentMetrics.dbfs,
+          peakFrequencyHz: currentMetrics.peakFrequencyHz,
+          rms: currentMetrics.rms,
+          sensors: {
+            magnetometer: currentSensors.magnetometer?.magnitude,
+            motion: currentSensors.motion?.magnitude,
+          },
+        };
 
         // Define legenda provisória durante a gravação/transmissão
         const provEvt: LiveCaptionEvent = {
@@ -277,12 +405,27 @@ export const CommunicationModule: React.FC<Props> = ({
           peakFrequencyHz: currentMetrics.peakFrequencyHz,
           provider: hasGemini ? 'Gemini 3.8 Flash' : 'Motor Espectral Local (DSP)',
           isRelevant: true,
+          telemetryAtStart,
         };
         setProvisionalCaption(provEvt);
 
         try {
           const chunk = await onGetAudioChunk(3600);
           if (isDisposed) return;
+
+          // Snapshot de telemetria próximo ao término da captura
+          const endMetrics = audioMetricsRef.current;
+          const endSensors = sensorStateRef.current;
+          const telemetryAtEnd = {
+            timestamp: Date.now(),
+            dbfs: endMetrics.dbfs,
+            peakFrequencyHz: endMetrics.peakFrequencyHz,
+            rms: endMetrics.rms,
+            sensors: {
+              magnetometer: endSensors.magnetometer?.magnitude,
+              motion: endSensors.motion?.magnitude,
+            },
+          };
 
           if (chunk && chunk.blob.size > 2000) {
             LiveCaptionsEngine.recordAiCall(rateLimiterRef.current, currentMetrics);
@@ -298,6 +441,9 @@ export const CommunicationModule: React.FC<Props> = ({
               };
               reader.readAsDataURL(chunk.blob);
             });
+
+            // Computar hash SHA-256 do áudio original no momento da captura
+            const originalAudioSha256 = await calculateBlobSha256(chunk.blob);
 
             const reqHeaders: Record<string, string> = { 'Content-Type': 'application/json' };
             if (token) reqHeaders['Authorization'] = `Bearer ${token}`;
@@ -359,6 +505,9 @@ export const CommunicationModule: React.FC<Props> = ({
                 toolSessionId: activeToolSessionId,
                 isRelevant: classification.isSpeech || data.voiceDetected || classification.status === 'possible_speech' || classification.status === 'probable_transcription' || currentMetrics.isVoiceBand,
                 audioBlob: chunk.blob,
+                originalAudioSha256,
+                telemetryAtStart,
+                telemetryAtEnd,
                 alternativeTranscriptions: data.alternativeTranscriptions || [],
                 alternativeHypotheses: data.alternativeHypotheses || [],
                 acousticNotes: data.acousticNotes || `[Medição Real DSP] Volume dBFS: ${currentMetrics.dbfs.toFixed(1)} | Pico: ${currentMetrics.peakFrequencyHz} Hz`,
@@ -370,14 +519,60 @@ export const CommunicationModule: React.FC<Props> = ({
                 const combined = LiveCaptionsEngine.combineConsecutivePhrases([newEvt, ...prev.slice(0, 49)]);
                 return combined;
               });
+
+              // Disparar motor de correlação temporal e momentos FROC
+              if (currentSession) {
+                const moment = CorrelationEngine.correlateEvent({
+                  sessionId: currentSession.id,
+                  captionEvent: newEvt,
+                  recentTelemetry: recentTelemetryRef.current,
+                  recentQuestions: recentQuestionsRef.current,
+                  sessionStartTime: currentSession.startTime,
+                });
+
+                if (moment) {
+                  setFrocMoments((prev) => [moment, ...prev.slice(0, 49)]);
+                  setTimelineMarkers((prev) => [
+                    ...prev,
+                    {
+                      id: `mark_${moment.id}`,
+                      timestampMs: moment.timestampMs,
+                      relativeTimeFormatted: moment.relativeTimeFormatted,
+                      type: 'moment',
+                      label: moment.title,
+                      summary: moment.description,
+                      relevanceScore: moment.coincidingSignalsCount,
+                      momentId: moment.id,
+                    },
+                  ]);
+                  setGuidedStep(4);
+                } else if (newEvt.candidateTranscription) {
+                  const elapsed = Math.max(0, newEvt.timestampMs - currentSession.startTime);
+                  setTimelineMarkers((prev) => [
+                    ...prev,
+                    {
+                      id: `speech_${newEvt.id}`,
+                      timestampMs: newEvt.timestampMs,
+                      relativeTimeFormatted: newEvt.timestampFormatted || CorrelationEngine.formatRelativeTime(elapsed),
+                      type: 'speech',
+                      label: 'Fala Captada',
+                      summary: `"${newEvt.candidateTranscription}" (${Math.round((newEvt.confidence || 0) * 100)}%)`,
+                      relevanceScore: 1,
+                    },
+                  ]);
+                }
+              }
+            } else {
+              setLiveCaptionError('Falha temporária ao comunicar com a IA neural. Análise em fallback local mantida.');
             }
           }
-        } catch (chunkErr) {
+        } catch (chunkErr: any) {
           console.warn('[LiveCaptions] Falha no processamento de chunk:', chunkErr);
           setLiveCaptionStatus('error');
+          setLiveCaptionError(chunkErr?.message || 'Falha na gravação ou transmissão do sinal acústico.');
           setProvisionalCaption(null);
         } finally {
-          isTransmittingChunkRef.current = false;
+          audioChunkLockRef.current = false;
           setIsTransmittingChunk(false);
           setAnalyzingSegmentRange(null);
           setLiveCaptionStatus('listening');
@@ -387,22 +582,24 @@ export const CommunicationModule: React.FC<Props> = ({
 
     return () => {
       isDisposed = true;
-      isTransmittingChunkRef.current = false;
+      audioChunkLockRef.current = false;
       clearInterval(vadInterval);
     };
   }, [hasAudioPermission, isLiveCaptionsActive, hasGemini, isToolSessionActive, activeToolSessionId, onGetAudioChunk, getIdToken]);
 
-  const toggleSpeechRecognition = () => {
-    if (!speechRecognitionInstance) return;
-    if (isListeningSpeech) {
-      speechRecognitionInstance.stop();
-      setIsListeningSpeech(false);
+  const toggleDictation = () => {
+    if (!dictationRecogInstance) return;
+    if (isDictatingQuestion) {
+      try {
+        dictationRecogInstance.stop();
+      } catch {}
+      setIsDictatingQuestion(false);
     } else {
       try {
-        speechRecognitionInstance.start();
-        setIsListeningSpeech(true);
+        dictationRecogInstance.start();
+        setIsDictatingQuestion(true);
       } catch (err) {
-        console.warn('SpeechRecognition erro:', err);
+        console.warn('[Dictation] Erro ao iniciar reconhecimento de voz:', err);
       }
     }
   };
@@ -420,10 +617,16 @@ export const CommunicationModule: React.FC<Props> = ({
     }
 
     if (activeAudioElementRef.current) {
-      activeAudioElementRef.current.pause();
+      try {
+        activeAudioElementRef.current.pause();
+        if (activeAudioElementRef.current.src && activeAudioElementRef.current.src.startsWith('blob:')) {
+          URL.revokeObjectURL(activeAudioElementRef.current.src);
+        }
+      } catch {}
       activeAudioElementRef.current = null;
     }
 
+    let urlToRevoke: string | null = null;
     try {
       let playBlob = evt.audioBlob;
       if (type === 'treated') {
@@ -440,6 +643,7 @@ export const CommunicationModule: React.FC<Props> = ({
       }
 
       const url = URL.createObjectURL(playBlob);
+      urlToRevoke = url;
       const audio = new Audio(url);
       activeAudioElementRef.current = audio;
       setPlayingAudioId(evt.id);
@@ -456,19 +660,24 @@ export const CommunicationModule: React.FC<Props> = ({
         setPlayingAudioId(null);
         setPlayingFilterType(null);
         activeAudioElementRef.current = null;
+        setLiveCaptionError('Falha ao reproduzir trecho de áudio gravado.');
       };
 
       await audio.play();
     } catch (playErr) {
       console.warn('[AudioPlayer] Falha ao reproduzir trecho:', playErr);
+      if (urlToRevoke) URL.revokeObjectURL(urlToRevoke);
       setPlayingAudioId(null);
       setPlayingFilterType(null);
+      setLiveCaptionError('Não foi possível inicializar a reprodução do áudio.');
     }
   };
 
   const handleReanalyzeSnippet = async (evt: LiveCaptionEvent) => {
-    if (!evt.audioBlob || isTransmittingChunkRef.current) return;
+    if (!evt.audioBlob || audioChunkLockRef.current) return;
+    audioChunkLockRef.current = true;
     setReanalyzingId(evt.id);
+    setLiveCaptionError(null);
 
     try {
       const token = await getIdToken();
@@ -534,10 +743,14 @@ export const CommunicationModule: React.FC<Props> = ({
             return item;
           })
         );
+      } else {
+        setLiveCaptionError('A reanálise do trecho não pôde ser completada no servidor.');
       }
-    } catch (err) {
+    } catch (err: any) {
       console.warn('[Reanalyze] Falha na reanálise pericial:', err);
+      setLiveCaptionError('Erro na conexão durante a reanálise acústica.');
     } finally {
+      audioChunkLockRef.current = false;
       setReanalyzingId(null);
     }
   };
@@ -560,22 +773,56 @@ export const CommunicationModule: React.FC<Props> = ({
 
     const now = Date.now();
     const elapsed = activeSessionRef.current ? Math.max(0, now - activeSessionRef.current.startTime) : 0;
+    const timeFormatted = LiveCaptionsEngine.formatRelativeTime(elapsed);
     lastQuestionContextRef.current = {
       text: q,
       timestampMs: now,
-      timeFormatted: LiveCaptionsEngine.formatRelativeTime(elapsed),
+      timeFormatted,
     };
+
+    const questionCtx: QuestionContext = {
+      id: `q_${now}`,
+      text: q,
+      timestampMs: now,
+      timeFormatted,
+    };
+    recentQuestionsRef.current = [questionCtx, ...recentQuestionsRef.current.slice(0, 19)];
+    setLastQuestionNotice(`Pergunta enviada às ${timeFormatted}. Aguardando análise acústica pós-pergunta...`);
+    setTimeout(() => setLastQuestionNotice(null), 15000);
+
+    setTimelineMarkers((prev) => [
+      ...prev,
+      {
+        id: `q_mark_${now}`,
+        timestampMs: now,
+        relativeTimeFormatted: timeFormatted,
+        type: 'question',
+        label: 'Pergunta do Investigador',
+        summary: q,
+        relevanceScore: 1,
+      },
+    ]);
+    setGuidedStep(2);
 
     try {
       let audioBlob: Blob | undefined;
+      // Adquirir lock compartilhado para impedir colisão de gravação com Live Captions
       if (onGetAudioChunk && hasAudioPermission) {
-        try {
-          const chunk = await onGetAudioChunk(3500);
-          if (chunk?.blob && chunk.blob.size > 0) {
-            audioBlob = chunk.blob;
+        if (!audioChunkLockRef.current) {
+          audioChunkLockRef.current = true;
+          try {
+            const chunk = await onGetAudioChunk(3500);
+            if (chunk?.blob && chunk.blob.size > 0) {
+              audioBlob = chunk.blob;
+            }
+          } catch (audioErr) {
+            console.warn('Não foi possível obter áudio para a pergunta:', audioErr);
+          } finally {
+            audioChunkLockRef.current = false;
           }
-        } catch (audioErr) {
-          console.warn('Não foi possível obter áudio para a pergunta:', audioErr);
+        } else {
+          // Se o canal de áudio já estava gravando um chunk contínuo, envia sem duplicar gravação simultânea
+          console.info('[Question] Canal de áudio ocupado por chunk contínuo. Pergunta enviada sem segundo recorder concorrente.');
         }
       }
 
@@ -597,6 +844,57 @@ export const CommunicationModule: React.FC<Props> = ({
           possibleName: result.possibleName,
           timestamp: result.formattedTime,
         });
+
+        if (result.candidateTranscription) {
+          const currentSession = activeSessionRef.current;
+          const completionTime = Date.now();
+          const elapsed = currentSession ? Math.max(0, completionTime - currentSession.startTime) : 0;
+          const timeFormatted = LiveCaptionsEngine.formatRelativeTime(elapsed);
+          const secsAfter = Math.max(1, Math.round((completionTime - now) / 1000));
+          const responseMoment: FrocMoment = {
+            id: `moment_q_${result.id}`,
+            sessionId: currentSession?.id || 'session',
+            timestampMs: completionTime,
+            relativeTimeFormatted: timeFormatted,
+            title: 'Possível Resposta à Pergunta',
+            description: `Possível fala captada ${secsAfter} segundos após sua pergunta "${q}": "${result.candidateTranscription}"`,
+            type: 'post_question_speech',
+            signalsSummary: {
+              audioDeltaDbfs: result.signalData?.dbfs || -35,
+              peakFrequencyHz: result.signalData?.peakFrequencyHz || 800,
+              magneticDeltaUt: sensorStateRef.current.magnetometer?.available ? sensorStateRef.current.magnetometer.delta : 0,
+              motionMagnitude: sensorStateRef.current.motion?.available ? sensorStateRef.current.motion.magnitude : 0,
+              isDeviceStable: (sensorStateRef.current.motion?.magnitude || 0) <= 0.8,
+              postQuestionElapsedSec: secsAfter,
+            },
+            coincidingSignalsCount: 2,
+            confidenceScore: result.confidenceScore || 0.75,
+            candidateTranscription: result.candidateTranscription,
+            provider: result.aiAnalysis?.provider || 'IA + DSP Correlacionado',
+            questionContext: q,
+            questionTimestampMs: now,
+            secondsAfterQuestion: secsAfter,
+            audioBlob: audioBlob,
+            alternativeHypotheses: result.aiAnalysis?.alternativeHypotheses || ['Variação acústica natural'],
+            reanalysisResults: [],
+          };
+
+          setFrocMoments((prev) => [responseMoment, ...prev.slice(0, 49)]);
+          setTimelineMarkers((prev) => [
+            ...prev,
+            {
+              id: `mark_${responseMoment.id}`,
+              timestampMs: completionTime,
+              relativeTimeFormatted: timeFormatted,
+              type: 'moment',
+              label: 'Resposta Registrada',
+              summary: `"${result.candidateTranscription}" (${secsAfter}s após a pergunta)`,
+              relevanceScore: 2,
+              momentId: responseMoment.id,
+            },
+          ]);
+          setLastQuestionNotice(`Possível fala captada ${secsAfter} segundos após sua pergunta: "${result.candidateTranscription}"`);
+        }
       }
     } catch {
       setQuestionText(q);
@@ -614,6 +912,130 @@ export const CommunicationModule: React.FC<Props> = ({
     } catch (err) {
       console.error('Falha ao salvar evidência de legenda:', err);
     }
+  };
+
+  const handleEndSessionClick = () => {
+    if (!activeSession) return;
+    const summary = CorrelationEngine.generateSessionSummary({
+      sessionId: activeSession.id,
+      sessionTitle: activeSession.title,
+      startTime: activeSession.startTime,
+      endTime: Date.now(),
+      questions: recentQuestionsRef.current,
+      captionEvents: liveCaptionEvents,
+      moments: frocMoments,
+      visualCapturesCount: evidenceList.filter((e) => e.category === 'photo_capture').length,
+      maxMagneticDeltaUt: Math.max(
+        0,
+        ...recentTelemetryRef.current.map((t) => Math.abs(t.magneticDeltaUt || 0))
+      ),
+    });
+    setSessionSummary(summary);
+    onEndSession();
+  };
+
+  const handleSaveMomentEvidence = async (moment: FrocMoment) => {
+    if (onSaveLiveCaptionEvidence && moment.audioBlob) {
+      const fakeEvent: LiveCaptionEvent = {
+        id: `ev_${moment.id}`,
+        timestampFormatted: moment.relativeTimeFormatted,
+        timestampMs: moment.timestampMs,
+        status: 'probable_transcription',
+        text: moment.description,
+        candidateTranscription: moment.candidateTranscription || null,
+        confidence: moment.confidenceScore || 0.6,
+        dbfs: moment.signalsSummary.audioDeltaDbfs || -40,
+        peakFrequencyHz: moment.signalsSummary.peakFrequencyHz || 800,
+        provider: moment.provider || 'FROC Moment Correlated',
+        isRelevant: true,
+        audioBlob: moment.audioBlob,
+        treatedAudioBlob: moment.treatedAudioBlob,
+        acousticNotes: moment.acousticNotes || moment.description,
+        precedingQuestion: moment.questionContext,
+        alternativeHypotheses: moment.alternativeHypotheses,
+        investigatorDecision: moment.investigatorDecision || 'relevant',
+      };
+      await onSaveLiveCaptionEvidence(fakeEvent, moment.audioBlob);
+      setSavedMomentIds((prev) => ({ ...prev, [moment.id]: true }));
+    }
+  };
+
+  const handleReanalyzeMoment = async (moment: FrocMoment) => {
+    if (!moment.audioBlob || audioChunkLockRef.current) return;
+    audioChunkLockRef.current = true;
+    try {
+      const token = await getIdToken();
+      const reader = new FileReader();
+      const base64Audio = await new Promise<string>((res) => {
+        reader.onloadend = () => res((reader.result as string) || '');
+        reader.readAsDataURL(moment.audioBlob!);
+      });
+
+      const reqHeaders: Record<string, string> = { 'Content-Type': 'application/json' };
+      if (token) reqHeaders['Authorization'] = `Bearer ${token}`;
+      if (activeToolSessionId) reqHeaders['x-tool-session-id'] = activeToolSessionId;
+      reqHeaders['x-request-id'] = `reanalyze_moment_${moment.id}_${Date.now()}`;
+
+      const resp = await fetch('/api/analyze', {
+        method: 'POST',
+        headers: reqHeaders,
+        body: JSON.stringify({
+          question: `Reanálise do momento gravado em ${moment.relativeTimeFormatted}`,
+          audioBase64: base64Audio,
+          mimeType: moment.audioBlob.type || 'audio/webm',
+          toolSessionId: activeToolSessionId,
+          audioMetrics: {
+            dbfs: -35,
+            peakFrequencyHz: moment.signalsSummary.peakFrequencyHz || 800,
+            rms: 0.05,
+            isVoiceBand: true,
+          },
+          sensorContext: sensorStateRef.current,
+        }),
+      });
+
+      if (resp.ok) {
+        const data = await resp.json();
+        const ambiguity = LiveCaptionsEngine.detectAmbiguity(
+          { text: moment.candidateTranscription, confidence: moment.confidenceScore || 0 },
+          { text: data.candidateTranscription, confidence: data.confidence }
+        );
+
+        const newResult = {
+          candidateTranscription: data.candidateTranscription || null,
+          confidence: typeof data.confidence === 'number' ? data.confidence : 0,
+          timestamp: Date.now(),
+          provider: data.provider || 'Reanálise Forense',
+        };
+
+        setFrocMoments((prev) =>
+          prev.map((m) => {
+            if (m.id === moment.id) {
+              return {
+                ...m,
+                isAmbiguous: ambiguity.isAmbiguous,
+                reanalysisResults: [...(m.reanalysisResults || []), newResult],
+                alternativeTranscriptions: [
+                  ...(m.alternativeTranscriptions || []),
+                  ...(data.alternativeTranscriptions || []),
+                ],
+              };
+            }
+            return m;
+          })
+        );
+      }
+    } catch (err) {
+      console.warn('Erro ao reanalisar momento:', err);
+    } finally {
+      audioChunkLockRef.current = false;
+    }
+  };
+
+  const handleSetMomentDecision = (moment: FrocMoment, decision: 'relevant' | 'inconclusive' | 'discard') => {
+    setFrocMoments((prev) =>
+      prev.map((m) => (m.id === moment.id ? { ...m, investigatorDecision: decision } : m))
+    );
   };
 
   // Assistant query
@@ -712,214 +1134,366 @@ export const CommunicationModule: React.FC<Props> = ({
     return `${hrs}:${mins}:${secs}`;
   };
 
+  if (!activeSession) {
+    return (
+      <div className="space-y-4">
+        <StartInvestigationHero
+          onStartSession={async () => {
+            await onStartSession();
+          }}
+          onRequestMicPermission={onRequestMicPermission}
+          onCalibrateSensors={onCalibrateSensors}
+          experienceMode={experienceMode}
+          onToggleExperienceMode={handleToggleExperienceMode}
+          onOpenGuidedMode={() => {
+            setShowGuidedBanner(true);
+            handleToggleExperienceMode('simple');
+          }}
+        />
+
+        {/* Modal de Resumo Inteligente se recém encerrada */}
+        {sessionSummary && (
+          <SessionSummaryModal
+            summary={sessionSummary}
+            onClose={() => setSessionSummary(null)}
+            onSaveMomentEvidence={handleSaveMomentEvidence}
+            onNavigateToEvidenceTab={() => onNavigateTab && onNavigateTab('evidence')}
+          />
+        )}
+      </div>
+    );
+  }
+
   return (
     <div className="space-y-4">
-      {/* 1. Header Compacto de Sessão & Controles */}
-      <div className="bg-[#0b121e] border border-cyan-950/90 rounded-lg p-3 sm:p-4 shadow-lg">
-        <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3">
-          <div>
+      {/* 1. Header de Investigação Ativa & Alternador de Modo */}
+      <div className="bg-[#0b121e] border border-cyan-950/90 rounded-2xl p-3 sm:p-4 shadow-xl">
+        <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-3">
+          <div className="space-y-1">
             <div className="flex items-center gap-2">
-              <span className="inline-block w-2.5 h-2.5 rounded-full bg-cyan-400 shadow-[0_0_8px_#00f0ff]" />
-              <h2 className="text-sm sm:text-base font-bold text-white tracking-wide">
-                FROC SOBRENATURAL — SESSÃO DE COMUNICAÇÃO
+              <span className="inline-block w-2.5 h-2.5 rounded-full bg-emerald-400 animate-pulse shadow-[0_0_10px_#10b981]" />
+              <h2 className="text-sm sm:text-base font-bold text-white font-mono tracking-wide uppercase">
+                ESTAÇÃO FROC — INVESTIGAÇÃO ATIVA
               </h2>
             </div>
-            <p className="text-xs text-slate-400 font-mono mt-0.5">
-              Protocolo de Cadeia de Evidência e Análise Espectral Rigorosa
+            <p className="text-[11px] text-slate-400 font-mono">
+              Monitorando áudio, variações acústicas e sensores em tempo real
             </p>
           </div>
 
-          <div className="flex items-center flex-wrap gap-2 w-full sm:w-auto justify-between sm:justify-end">
-            {activeSession ? (
-              <div className="flex items-center gap-2">
-                <div className="bg-slate-900 border border-slate-700/80 px-2.5 py-1 rounded text-xs font-mono text-cyan-300">
-                  <span className="text-slate-500 mr-1.5">TEMPO:</span>
-                  <span className="font-semibold">{getDurationString()}</span>
-                </div>
-
-                <button
-                  onClick={onToggleRecording}
-                  className={`flex items-center gap-1.5 px-3 py-1.5 rounded text-xs font-semibold font-mono transition cursor-pointer ${
-                    isRecording
-                      ? 'bg-rose-950/80 border border-rose-500 text-rose-300 animate-pulse'
-                      : 'bg-emerald-950/80 border border-emerald-500/60 text-emerald-300 hover:bg-emerald-900/60'
-                  }`}
-                >
-                  {isRecording ? (
-                    <>
-                      <Square className="w-3.5 h-3.5 fill-rose-400" />
-                      <span>PARAR ÁUDIO</span>
-                    </>
-                  ) : (
-                    <>
-                      <Play className="w-3.5 h-3.5 fill-emerald-400" />
-                      <span>GRAVAR ÁUDIO</span>
-                    </>
-                  )}
-                </button>
-
-                <button
-                  onClick={onEndSession}
-                  className="px-2.5 py-1.5 rounded bg-slate-800 hover:bg-slate-700 border border-slate-600 text-xs font-mono text-slate-300 transition cursor-pointer"
-                >
-                  ENCERRAR SESSÃO
-                </button>
-              </div>
-            ) : (
+          {/* Alternador de Modo Simples vs Avançado */}
+          <div className="flex items-center flex-wrap gap-2 w-full md:w-auto justify-between md:justify-end">
+            <div className="flex items-center bg-[#070c16] border border-cyan-500/30 rounded-lg p-0.5 text-xs font-mono">
               <button
-                onClick={onStartSession}
-                className="w-full sm:w-auto flex items-center justify-center gap-2 px-4 py-2 rounded bg-cyan-600/30 hover:bg-cyan-600/50 border border-cyan-400/80 text-cyan-200 text-xs font-mono font-bold tracking-wider transition cursor-pointer shadow-[0_0_15px_rgba(0,240,255,0.2)]"
+                type="button"
+                onClick={() => handleToggleExperienceMode('simple')}
+                className={`px-2.5 py-1 rounded transition cursor-pointer font-semibold ${
+                  experienceMode === 'simple'
+                    ? 'bg-cyan-500 text-slate-950 font-bold shadow'
+                    : 'text-slate-400 hover:text-cyan-300'
+                }`}
               >
-                <Radio className="w-4 h-4 text-cyan-400" />
-                <span>INICIAR NOVA SESSÃO</span>
+                MODO SIMPLES
               </button>
-            )}
+              <button
+                type="button"
+                onClick={() => handleToggleExperienceMode('advanced')}
+                className={`px-2.5 py-1 rounded transition cursor-pointer font-semibold ${
+                  experienceMode === 'advanced'
+                    ? 'bg-cyan-500 text-slate-950 font-bold shadow'
+                    : 'text-slate-400 hover:text-cyan-300'
+                }`}
+              >
+                MODO AVANÇADO
+              </button>
+            </div>
+
+            <div className="flex items-center gap-2">
+              <div className="bg-slate-900 border border-slate-700/80 px-2.5 py-1 rounded text-xs font-mono text-cyan-300">
+                <span className="text-slate-500 mr-1.5">TEMPO:</span>
+                <span className="font-semibold">{getDurationString()}</span>
+              </div>
+
+              <button
+                type="button"
+                onClick={onToggleRecording}
+                className={`flex items-center gap-1.5 px-3 py-1.5 rounded text-xs font-semibold font-mono transition cursor-pointer ${
+                  isRecording
+                    ? 'bg-rose-950/80 border border-rose-500 text-rose-300 animate-pulse'
+                    : 'bg-emerald-950/80 border border-emerald-500/60 text-emerald-300 hover:bg-emerald-900/60'
+                }`}
+              >
+                {isRecording ? (
+                  <>
+                    <Square className="w-3.5 h-3.5 fill-rose-400" />
+                    <span>PARAR</span>
+                  </>
+                ) : (
+                  <>
+                    <Play className="w-3.5 h-3.5 fill-emerald-400" />
+                    <span>GRAVAR</span>
+                  </>
+                )}
+              </button>
+
+              <button
+                type="button"
+                onClick={handleEndSessionClick}
+                className="px-3 py-1.5 rounded bg-rose-950/70 hover:bg-rose-900/80 border border-rose-600/70 text-xs font-mono text-rose-200 transition cursor-pointer shadow"
+              >
+                ENCERRAR
+              </button>
+            </div>
           </div>
         </div>
 
-        {/* Status flags */}
+        {/* Status bar */}
         <div className="mt-3 pt-2.5 border-t border-slate-800/80 flex flex-wrap items-center justify-between text-[11px] font-mono text-slate-400 gap-2">
           <div className="flex items-center gap-4 flex-wrap">
             <span className="flex items-center gap-1.5">
-              <span
-                className={`w-1.5 h-1.5 rounded-full ${
-                  hasAudioPermission ? 'bg-emerald-400' : 'bg-rose-500'
-                }`}
-              />
+              <span className={`w-1.5 h-1.5 rounded-full ${hasAudioPermission ? 'bg-emerald-400' : 'bg-rose-500'}`} />
               <span>Mic: {hasAudioPermission ? 'Conectado' : 'Sem Permissão'}</span>
             </span>
             <span className="flex items-center gap-1.5">
-              <span
-                className={`w-1.5 h-1.5 rounded-full ${
-                  hasGemini ? 'bg-cyan-400' : 'bg-slate-500'
-                }`}
-              />
-              <span>IA: {hasGemini ? 'Gemini 3.8 Flash Ativo' : 'Motor Local (Offline)'}</span>
+              <span className={`w-1.5 h-1.5 rounded-full ${hasGemini ? 'bg-cyan-400' : 'bg-slate-500'}`} />
+              <span>IA: {hasGemini ? 'Gemini 3.8 Flash' : 'Motor Espectral Local'}</span>
             </span>
             <span className="flex items-center gap-1.5">
-              <span
-                className={`w-1.5 h-1.5 rounded-full ${
-                  sensorState.magnetometer.available ? 'bg-purple-400' : 'bg-slate-600'
-                }`}
-              />
-              <span>Mag: {sensorState.magnetometer.available ? `${sensorState.magnetometer.magnitude} µT` : 'Indisponível'}</span>
+              <span className={`w-1.5 h-1.5 rounded-full ${sensorState.magnetometer.available ? 'bg-purple-400' : 'bg-slate-600'}`} />
+              <span>Mag: {sensorState.magnetometer.available ? `${sensorState.magnetometer.magnitude} µT` : 'Off'}</span>
             </span>
           </div>
 
           <div className="flex items-center gap-2">
             <button
-              onClick={() => setShowPreparationModal(true)}
-              className="text-emerald-400 hover:text-emerald-300 flex items-center gap-1 text-[11px] underline cursor-pointer"
+              type="button"
+              onClick={() => setShowGuidedBanner(!showGuidedBanner)}
+              className={`text-[11px] font-mono px-2 py-0.5 rounded border transition cursor-pointer ${
+                showGuidedBanner ? 'bg-cyan-950/80 border-cyan-400 text-cyan-200' : 'bg-slate-900 border-slate-700 text-slate-400 hover:text-white'
+              }`}
             >
-              <span>Diagnóstico Rápido</span>
+              Modo Guiado {showGuidedBanner ? 'Ativo' : 'Oculto'}
             </button>
-            <span className="text-slate-600">|</span>
-            <button
-              onClick={() => setShowAssistantModal(!showAssistantModal)}
-              className="text-cyan-400 hover:text-cyan-300 flex items-center gap-1 text-[11px] underline cursor-pointer"
-            >
-              <Bot className="w-3.5 h-3.5" />
-              <span>Consultoria Metodológica</span>
-            </button>
+            {experienceMode === 'advanced' && (
+              <>
+                <span className="text-slate-600">|</span>
+                <button
+                  type="button"
+                  onClick={() => setShowPreparationModal(true)}
+                  className="text-emerald-400 hover:text-emerald-300 text-[11px] underline cursor-pointer"
+                >
+                  Diagnóstico
+                </button>
+                <span className="text-slate-600">|</span>
+                <button
+                  type="button"
+                  onClick={() => setShowAssistantModal(!showAssistantModal)}
+                  className="text-cyan-400 hover:text-cyan-300 flex items-center gap-1 text-[11px] underline cursor-pointer"
+                >
+                  <Bot className="w-3 h-3" />
+                  <span>Consultoria</span>
+                </button>
+              </>
+            )}
           </div>
         </div>
       </div>
 
-      {/* Faixa de Instrumentos Recolhível (Áudio, Campo Magnético, Movimento, Câmera, Ouija, Rádio) */}
-      <div className="bg-[#080d16] border border-cyan-950/80 rounded-lg p-2.5">
-        <div className="flex justify-between items-center text-xs font-mono">
+      {/* 2. Banner de Modo Guiado para Iniciantes */}
+      {showGuidedBanner && (
+        <GuidedInvestigationBanner
+          currentStep={guidedStep}
+          onDismiss={() => setShowGuidedBanner(false)}
+          onSelectSuggestion={(sug) => {
+            setQuestionText(sug);
+          }}
+        />
+      )}
+
+      {/* 3. Hero Audiovisual Dinâmico — OUVINDO... e Reação em Tempo Real */}
+      <AudioVisualizerHero
+        status={liveCaptionStatus}
+        audioMetrics={audioMetrics}
+        sensorState={sensorState}
+        activityLevel={activityLevel}
+        activityExplanation={activityExplanation}
+        hasGemini={hasGemini}
+        analyzingSegmentRange={analyzingSegmentRange}
+        detectedWord={liveCaptionEvents[0]?.candidateTranscription || null}
+        confidence={liveCaptionEvents[0]?.confidence || 0}
+      />
+
+      {/* Notificação de correlação Pergunta + Resposta */}
+      {lastQuestionNotice && (
+        <div className="bg-emerald-950/80 border border-emerald-500/60 rounded-xl p-3 text-xs text-emerald-200 flex items-center justify-between gap-3 font-mono shadow-md animate-fade-in">
           <div className="flex items-center gap-2">
-            <Activity className="w-3.5 h-3.5 text-cyan-400" />
-            <span className="font-bold text-slate-300 uppercase tracking-wide">
-              FAIXA UNIFICADA DE INSTRUMENTOS
-            </span>
+            <Sparkles className="w-4 h-4 text-emerald-400 shrink-0" />
+            <span>{lastQuestionNotice}</span>
           </div>
-          <div className="flex items-center gap-2">
-            <button
-              onClick={() => setAudioSilentMode(!audioSilentMode)}
-              className={`px-2 py-0.5 rounded text-[10px] cursor-pointer transition ${
-                audioSilentMode
-                  ? 'bg-amber-950 text-amber-300 border border-amber-600/50'
-                  : 'bg-slate-800 text-slate-400 hover:text-white'
-              }`}
-            >
-              {audioSilentMode ? 'Modo Silencioso Ativo (Sem chiado)' : 'Modo Silencioso: Off'}
-            </button>
-            <button
-              onClick={() => setInstrumentsExpanded(!instrumentsExpanded)}
-              className="text-cyan-400 hover:text-cyan-300 text-[11px] underline cursor-pointer"
-            >
-              {instrumentsExpanded ? 'Recolher' : 'Expandir'}
-            </button>
+          <button
+            type="button"
+            onClick={() => setLastQuestionNotice(null)}
+            className="text-slate-400 hover:text-white text-xs px-2 py-0.5 cursor-pointer"
+          >
+            ✕
+          </button>
+        </div>
+      )}
+
+      {/* 4. Motor de Momentos Relevantes (Grande Diferencial FROC) */}
+      <div className="bg-[#080d16] border border-cyan-950/90 rounded-2xl p-4 sm:p-5 shadow-xl space-y-4">
+        <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-2 border-b border-slate-800/80 pb-3">
+          <div>
+            <div className="flex items-center gap-2">
+              <Sparkles className="w-4 h-4 text-cyan-400" />
+              <h3 className="text-sm font-bold text-white font-mono uppercase tracking-wider">
+                MOMENTOS RELEVANTES DA INVESTIGAÇÃO ({frocMoments.length})
+              </h3>
+            </div>
+            <p className="text-[11px] font-mono text-slate-400 mt-0.5">
+              Cruzamento instrumental simultâneo de áudio, sensores e perguntas sem falsos positivos
+            </p>
+          </div>
+          <div className="text-xs font-mono text-cyan-300 bg-cyan-950/80 border border-cyan-500/40 px-2.5 py-1 rounded">
+            Índice de Atividade: <strong className="font-bold">{activityLevel}</strong>
           </div>
         </div>
 
-        {instrumentsExpanded && (
-          <div className="grid grid-cols-2 sm:grid-cols-6 gap-2 mt-2.5 pt-2 border-t border-slate-800/80 text-[11px] font-mono">
-            {/* 1. Áudio */}
-            <div className="bg-[#0b121e] p-2 rounded border border-slate-800/80 space-y-1">
-              <span className="text-[10px] text-slate-500 uppercase block">1. Nível dBFS</span>
-              <strong className="text-emerald-400 block text-sm">{audioMetrics.dbfs.toFixed(1)}</strong>
-              <span className="text-[9px] text-slate-400">Pico: {audioMetrics.peakFrequencyHz} Hz</span>
-            </div>
-
-            {/* 2. Campo Magnético */}
-            <div
-              onClick={() => onNavigateTab && onNavigateTab('sensors')}
-              className="bg-[#0b121e] p-2 rounded border border-slate-800/80 space-y-1 cursor-pointer hover:border-cyan-800"
-            >
-              <span className="text-[10px] text-slate-500 uppercase block">2. Magnetômetro</span>
-              <strong className="text-purple-300 block text-sm">
-                {sensorState.magnetometer.available ? `${sensorState.magnetometer.magnitude} µT` : 'N/D'}
-              </strong>
-              <span className="text-[9px] text-slate-400">
-                Δ: {sensorState.magnetometer.available ? `±${sensorState.magnetometer.delta} µT` : 'Sem sensor'}
-              </span>
-            </div>
-
-            {/* 3. Movimento Celular */}
-            <div
-              onClick={() => onNavigateTab && onNavigateTab('sensors')}
-              className="bg-[#0b121e] p-2 rounded border border-slate-800/80 space-y-1 cursor-pointer hover:border-cyan-800"
-            >
-              <span className="text-[10px] text-slate-500 uppercase block">3. Movimento</span>
-              <strong className="text-amber-300 block text-sm">
-                {sensorState.motion.available ? `${sensorState.motion.magnitude} m/s²` : 'N/D'}
-              </strong>
-              <span className="text-[9px] text-slate-400">
-                {sensorState.motion.magnitude > 2 ? 'Em tremor' : 'Estável'}
-              </span>
-            </div>
-
-            {/* 4. Câmera / Óptica */}
-            <div
-              onClick={() => onNavigateTab && onNavigateTab('vision')}
-              className="bg-[#0b121e] p-2 rounded border border-slate-800/80 space-y-1 cursor-pointer hover:border-cyan-800"
-            >
-              <span className="text-[10px] text-slate-500 uppercase block">4. Visão Óptica</span>
-              <strong className="text-cyan-300 block text-xs">Acessível</strong>
-              <span className="text-[9px] text-slate-400">Sem raio X / térmica</span>
-            </div>
-
-            {/* 5. Ouija */}
-            <div
-              onClick={() => onNavigateTab && onNavigateTab('ouija')}
-              className="bg-[#0b121e] p-2 rounded border border-slate-800/80 space-y-1 cursor-pointer hover:border-cyan-800"
-            >
-              <span className="text-[10px] text-slate-500 uppercase block">5. Tabuleiro Ouija</span>
-              <strong className="text-cyan-300 block text-xs">Físico &amp; Digital</strong>
-              <span className="text-[9px] text-slate-400">Registro humano</span>
-            </div>
-
-            {/* 6. Rádio AM/FM & Acessórios */}
-            <div className="bg-[#0b121e] p-2 rounded border border-slate-800/80 space-y-1">
-              <span className="text-[10px] text-slate-500 uppercase block">6. Rádio AM/FM</span>
-              <strong className="text-slate-400 block text-xs">Sem Receptor</strong>
-              <span className="text-[9px] text-slate-500">Acessório externo off</span>
-            </div>
+        {frocMoments.length === 0 ? (
+          <div className="text-center py-7 text-slate-500 font-mono text-xs border border-dashed border-slate-800/80 rounded-xl space-y-1">
+            <p className="text-slate-400 font-semibold">Nenhum evento correlacionado detectado ainda nesta sessão.</p>
+            <p className="text-[11px] text-slate-600 max-w-md mx-auto">
+              A estação observa continuamente o microfone e os sensores. Quando houver coincidência temporal legítima (±2 a 3 segundos), o momento será destacado automaticamente aqui.
+            </p>
+          </div>
+        ) : (
+          <div className="grid grid-cols-1 gap-3">
+            {frocMoments.map((moment) => (
+              <FrocMomentCard
+                key={moment.id}
+                moment={moment}
+                onSaveEvidence={handleSaveMomentEvidence}
+                onReanalyze={handleReanalyzeMoment}
+                onSetDecision={handleSetMomentDecision}
+                isSaved={!!savedMomentIds[moment.id]}
+              />
+            ))}
           </div>
         )}
       </div>
+
+      {/* 5. Mapa Temporal da Sessão (Timeline Visual com Pontos Clicáveis) */}
+      <SessionTimeline
+        markers={timelineMarkers}
+        startTime={activeSession.startTime}
+        currentTimeMs={Date.now()}
+        onSelectMarker={(m) => setSelectedMarkerId(m.id)}
+        selectedMarkerId={selectedMarkerId}
+      />
+
+      {/* Recursos de Modo Avançado (Instrumentação Técnica Completa) */}
+      {experienceMode === 'advanced' && (
+        <>
+          {/* Faixa de Instrumentos Recolhível (Áudio, Campo Magnético, Movimento, Câmera, Ouija, Rádio) */}
+          <div className="bg-[#080d16] border border-cyan-950/80 rounded-lg p-2.5">
+            <div className="flex justify-between items-center text-xs font-mono">
+              <div className="flex items-center gap-2">
+                <Activity className="w-3.5 h-3.5 text-cyan-400" />
+                <span className="font-bold text-slate-300 uppercase tracking-wide">
+                  FAIXA UNIFICADA DE INSTRUMENTOS
+                </span>
+              </div>
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => setAudioSilentMode(!audioSilentMode)}
+                  className={`px-2 py-0.5 rounded text-[10px] cursor-pointer transition ${
+                    audioSilentMode
+                      ? 'bg-amber-950 text-amber-300 border border-amber-600/50'
+                      : 'bg-slate-800 text-slate-400 hover:text-white'
+                  }`}
+                >
+                  {audioSilentMode ? 'Modo Silencioso Ativo (Sem chiado)' : 'Modo Silencioso: Off'}
+                </button>
+                <button
+                  onClick={() => setInstrumentsExpanded(!instrumentsExpanded)}
+                  className="text-cyan-400 hover:text-cyan-300 text-[11px] underline cursor-pointer"
+                >
+                  {instrumentsExpanded ? 'Recolher' : 'Expandir'}
+                </button>
+              </div>
+            </div>
+
+            {instrumentsExpanded && (
+              <div className="grid grid-cols-2 sm:grid-cols-6 gap-2 mt-2.5 pt-2 border-t border-slate-800/80 text-[11px] font-mono">
+                {/* 1. Áudio */}
+                <div className="bg-[#0b121e] p-2 rounded border border-slate-800/80 space-y-1">
+                  <span className="text-[10px] text-slate-500 uppercase block">1. Nível dBFS</span>
+                  <strong className="text-emerald-400 block text-sm">{audioMetrics.dbfs.toFixed(1)}</strong>
+                  <span className="text-[9px] text-slate-400">Pico: {audioMetrics.peakFrequencyHz} Hz</span>
+                </div>
+
+                {/* 2. Campo Magnético */}
+                <div
+                  onClick={() => onNavigateTab && onNavigateTab('sensors')}
+                  className="bg-[#0b121e] p-2 rounded border border-slate-800/80 space-y-1 cursor-pointer hover:border-cyan-800"
+                >
+                  <span className="text-[10px] text-slate-500 uppercase block">2. Magnetômetro</span>
+                  <strong className="text-purple-300 block text-sm">
+                    {sensorState.magnetometer.available ? `${sensorState.magnetometer.magnitude} µT` : 'N/D'}
+                  </strong>
+                  <span className="text-[9px] text-slate-400">
+                    Δ: {sensorState.magnetometer.available ? `±${sensorState.magnetometer.delta} µT` : 'Sem sensor'}
+                  </span>
+                </div>
+
+                {/* 3. Movimento Celular */}
+                <div
+                  onClick={() => onNavigateTab && onNavigateTab('sensors')}
+                  className="bg-[#0b121e] p-2 rounded border border-slate-800/80 space-y-1 cursor-pointer hover:border-cyan-800"
+                >
+                  <span className="text-[10px] text-slate-500 uppercase block">3. Movimento</span>
+                  <strong className="text-amber-300 block text-sm">
+                    {sensorState.motion.available ? `${sensorState.motion.magnitude} m/s²` : 'N/D'}
+                  </strong>
+                  <span className="text-[9px] text-slate-400">
+                    {sensorState.motion.magnitude > 2 ? 'Em tremor' : 'Estável'}
+                  </span>
+                </div>
+
+                {/* 4. Câmera / Óptica */}
+                <div
+                  onClick={() => onNavigateTab && onNavigateTab('vision')}
+                  className="bg-[#0b121e] p-2 rounded border border-slate-800/80 space-y-1 cursor-pointer hover:border-cyan-800"
+                >
+                  <span className="text-[10px] text-slate-500 uppercase block">4. Visão Óptica</span>
+                  <strong className="text-cyan-300 block text-xs">Acessível</strong>
+                  <span className="text-[9px] text-slate-400">Sem raio X / térmica</span>
+                </div>
+
+                {/* 5. Ouija */}
+                <div
+                  onClick={() => onNavigateTab && onNavigateTab('ouija')}
+                  className="bg-[#0b121e] p-2 rounded border border-slate-800/80 space-y-1 cursor-pointer hover:border-cyan-800"
+                >
+                  <span className="text-[10px] text-slate-500 uppercase block">5. Tabuleiro Ouija</span>
+                  <strong className="text-cyan-300 block text-xs">Físico &amp; Digital</strong>
+                  <span className="text-[9px] text-slate-400">Registro humano</span>
+                </div>
+
+                {/* 6. Rádio AM/FM & Acessórios */}
+                <div className="bg-[#0b121e] p-2 rounded border border-slate-800/80 space-y-1">
+                  <span className="text-[10px] text-slate-500 uppercase block">6. Rádio AM/FM</span>
+                  <strong className="text-slate-400 block text-xs">Sem Receptor</strong>
+                  <span className="text-[9px] text-slate-500">Acessório externo off</span>
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* 2. Osciloscópio & Espectrograma em Tempo Real */}
+          <AudioOscilloscope metrics={audioMetrics} isRecording={isRecording} />
+        </>
+      )}
 
       {/* Permission alert if mic denied */}
       {!hasAudioPermission && (
@@ -939,9 +1513,6 @@ export const CommunicationModule: React.FC<Props> = ({
           </button>
         </div>
       )}
-
-      {/* 2. Osciloscópio & Espectrograma em Tempo Real */}
-      <AudioOscilloscope metrics={audioMetrics} isRecording={isRecording} />
 
       {/* 2.5 Intérprete de Falas Captadas & Legendas ao Vivo (VAD + IA + DSP) */}
       <div className="bg-[#080d16] border border-cyan-950/90 rounded-lg p-3 sm:p-4 shadow-lg space-y-4">
@@ -1016,6 +1587,23 @@ export const CommunicationModule: React.FC<Props> = ({
               </span>
             </div>
             <span className="text-[10px] text-cyan-400 uppercase hidden sm:inline">Criptografia TLS 1.3</span>
+          </div>
+        )}
+
+        {/* Notificação visível de erro/alerta das legendas (sem poluir a interface) */}
+        {liveCaptionError && (
+          <div className="p-2 rounded bg-rose-950/70 border border-rose-600/50 flex items-center justify-between text-xs font-mono text-rose-200">
+            <div className="flex items-center gap-2">
+              <AlertCircle className="w-4 h-4 text-rose-400 shrink-0" />
+              <span>{liveCaptionError}</span>
+            </div>
+            <button
+              type="button"
+              onClick={() => setLiveCaptionError(null)}
+              className="text-[10px] text-rose-300 hover:text-white underline cursor-pointer shrink-0 ml-2"
+            >
+              Dispensar
+            </button>
           </div>
         )}
 
@@ -1504,15 +2092,25 @@ export const CommunicationModule: React.FC<Props> = ({
             {speechSupported && (
               <button
                 type="button"
-                onClick={toggleSpeechRecognition}
-                title={isListeningSpeech ? 'Parar reconhecimento de voz' : 'Falar pergunta via microfone'}
-                className={`absolute right-2 top-1/2 -translate-y-1/2 p-1 rounded transition cursor-pointer ${
-                  isListeningSpeech
-                    ? 'text-rose-400 bg-rose-950/80 animate-pulse'
-                    : 'text-slate-400 hover:text-cyan-300'
+                onClick={toggleDictation}
+                title={isDictatingQuestion ? 'Parar ditado da pergunta' : 'Ditar pergunta via microfone (preenchimento direto do texto)'}
+                className={`absolute right-2 top-1/2 -translate-y-1/2 p-1.5 rounded transition cursor-pointer flex items-center gap-1 ${
+                  isDictatingQuestion
+                    ? 'text-rose-300 bg-rose-950 border border-rose-500 animate-pulse text-[10px] font-bold'
+                    : 'text-slate-400 hover:text-cyan-300 hover:bg-slate-800'
                 }`}
               >
-                {isListeningSpeech ? <MicOff className="w-4 h-4" /> : <Mic className="w-4 h-4" />}
+                {isDictatingQuestion ? (
+                  <>
+                    <MicOff className="w-4 h-4 text-rose-400" />
+                    <span className="hidden sm:inline">DITANDO...</span>
+                  </>
+                ) : (
+                  <>
+                    <Mic className="w-4 h-4" />
+                    <span className="text-[10px] hidden sm:inline">DITAR</span>
+                  </>
+                )}
               </button>
             )}
           </div>
@@ -1548,7 +2146,7 @@ export const CommunicationModule: React.FC<Props> = ({
           </div>
         )}
 
-        {isListeningSpeech && (
+        {isDictatingQuestion && (
           <p className="text-[11px] text-rose-300 font-mono mt-1.5 flex items-center gap-1.5">
             <span className="w-2 h-2 rounded-full bg-rose-500 animate-ping" />
             <span>Ouvindo voz do investigador via SpeechRecognition... Fale claramente.</span>
@@ -2043,6 +2641,16 @@ export const CommunicationModule: React.FC<Props> = ({
             </div>
           </div>
         </div>
+      )}
+
+      {/* 7. Modal de Resumo Inteligente & Destaques da Investigação */}
+      {sessionSummary && (
+        <SessionSummaryModal
+          summary={sessionSummary}
+          onClose={() => setSessionSummary(null)}
+          onSaveMomentEvidence={handleSaveMomentEvidence}
+          onNavigateToEvidenceTab={() => onNavigateTab && onNavigateTab('evidence')}
+        />
       )}
     </div>
   );

@@ -474,7 +474,7 @@ export default function App() {
   };
 
   // Start a New Session
-  const handleStartSession = async () => {
+  const handleStartSession = async (): Promise<Session> => {
     const sessionId = typeof crypto !== 'undefined' && crypto.randomUUID ? `session_${crypto.randomUUID()}` : `session_${Date.now()}`;
     const newSession: Session = {
       id: sessionId,
@@ -496,6 +496,7 @@ export default function App() {
     if (!hasAudioPermission) {
       await requestMicPermission();
     }
+    return newSession;
   };
 
   // End Current Session
@@ -752,14 +753,11 @@ export default function App() {
   const handleSaveLiveCaptionEvidence = async (event: LiveCaptionEvent, audioBlob?: Blob) => {
     let currentSession = activeSession;
     if (!currentSession) {
-      await handleStartSession();
-      currentSession = activeSession;
+      currentSession = await handleStartSession();
     }
-    const sessionId = currentSession?.id || selectedSessionId;
+    const sessionId = currentSession.id;
     const now = Date.now();
-    const relativeTimeSec = currentSession
-      ? Math.max(0, (now - currentSession.startTime) / 1000)
-      : 0;
+    const relativeTimeSec = Math.max(0, (now - currentSession.startTime) / 1000);
 
     const evidenceId = `ev_caption_${now}`;
     const newEvidence: EvidenceItem = {
@@ -791,6 +789,9 @@ export default function App() {
       segmentStartMs: event.segmentStartMs,
       segmentEndMs: event.segmentEndMs,
       treatedAudioBlob: event.treatedAudioBlob,
+      originalAudioSha256: event.originalAudioSha256,
+      telemetryAtStart: event.telemetryAtStart,
+      telemetryAtEnd: event.telemetryAtEnd,
       decisionStatus: event.investigatorDecision === 'relevant'
         ? 'confirmed_candidate'
         : event.investigatorDecision === 'discard'
@@ -819,14 +820,11 @@ export default function App() {
   ) => {
     let currentSession = activeSession;
     if (!currentSession) {
-      await handleStartSession();
-      currentSession = activeSession;
+      currentSession = await handleStartSession();
     }
-    const sessionId = currentSession?.id || selectedSessionId;
+    const sessionId = currentSession.id;
     const now = Date.now();
-    const relativeTimeSec = currentSession
-      ? Math.max(0, (now - currentSession.startTime) / 1000)
-      : 0;
+    const relativeTimeSec = Math.max(0, (now - currentSession.startTime) / 1000);
 
     const evidenceId = `ev_photo_${now}`;
     const newEvidence: EvidenceItem = {
@@ -864,10 +862,14 @@ export default function App() {
     telemetry?: any,
     questionContext?: string
   ) => {
-    const sessionId = activeSession?.id || selectedSessionId;
+    let currentSession = activeSession;
+    if (!currentSession && !selectedSessionId) {
+      currentSession = await handleStartSession();
+    }
+    const sessionId = currentSession?.id || selectedSessionId || `session_${Date.now()}`;
     const now = Date.now();
-    const relativeTimeSec = activeSession
-      ? Math.max(0, (now - activeSession.startTime) / 1000)
+    const relativeTimeSec = currentSession
+      ? Math.max(0, (now - currentSession.startTime) / 1000)
       : 0;
 
     const evidenceId = `ev_ouija_${now}`;
@@ -1249,6 +1251,7 @@ export default function App() {
                 hasAudioPermission={hasAudioPermission}
                 onRequestMicPermission={handleRequestMicPermission}
                 hasGemini={hasGemini}
+                onCalibrateSensors={() => sensorEngineRef.current?.calibrateSensors()}
               />
             </ToolSessionGate>
           )}

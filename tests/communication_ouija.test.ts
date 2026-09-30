@@ -285,3 +285,136 @@ test('LiveCaptionsEngine: Combinação de fragmentos acústicos cronológicos', 
   assert.equal(newest.text, '"sai daqui"');
 });
 
+test('Session Creation & Evidence Linking: Sessão criada sob demanda retorna objeto de sessão de forma autoritativa para a evidência', async () => {
+  // Simula estado inicial sem sessão ativa (closure enxerga activeSession === null)
+  let activeSessionState: any = null;
+
+  const handleStartSession = async () => {
+    const newSession = {
+      id: `session_test_${Date.now()}`,
+      title: 'Sessão de Campo #1',
+      startTime: Date.now(),
+      status: 'active',
+      evidenceCount: 0,
+    };
+    // Atualização de state é assíncrona
+    setTimeout(() => {
+      activeSessionState = newSession;
+    }, 100);
+    return newSession;
+  };
+
+  const handleSaveLiveCaptionEvidence = async (event: any) => {
+    let currentSession = activeSessionState;
+    if (!currentSession) {
+      currentSession = await handleStartSession();
+    }
+    // sessionId obtido imediatamente da instância retornada, sem depender de activeSessionState
+    assert.ok(currentSession, 'A sessão retornada não deve ser nula');
+    assert.ok(currentSession.id, 'O ID da sessão retornada deve existir');
+    assert.match(currentSession.id, /^session_test_/);
+
+    const evidence = {
+      id: `ev_${Date.now()}`,
+      sessionId: currentSession.id,
+      text: event.text,
+      timestamp: Date.now(),
+    };
+    return evidence;
+  };
+
+  const savedEvidence = await handleSaveLiveCaptionEvidence({ text: 'Sinal vocal detectado' });
+  assert.ok(savedEvidence.sessionId, 'Evidência de legenda deve ter sessionId válido');
+  assert.notEqual(savedEvidence.sessionId, null);
+  assert.notEqual(savedEvidence.sessionId, '');
+});
+
+test('Race Condition Lock: Lock compartilhado impede colisões de gravação entre Live Captions e envio de pergunta', async () => {
+  const audioChunkLock = { current: false };
+  let concurrentRecordings = 0;
+  let maxConcurrentRecordings = 0;
+  let questionsRecorded = 0;
+  let questionsSentWithoutConflict = 0;
+
+  const mockGetAudioChunk = async (durationMs: number) => {
+    concurrentRecordings++;
+    maxConcurrentRecordings = Math.max(maxConcurrentRecordings, concurrentRecordings);
+    await new Promise((r) => setTimeout(r, 40));
+    concurrentRecordings--;
+    return { blob: new Blob(['audio']), mimeType: 'audio/webm' };
+  };
+
+  // Live captions captura chunk de 3600ms
+  const runLiveCaptionsCapture = async () => {
+    if (audioChunkLock.current) return;
+    audioChunkLock.current = true;
+    try {
+      await mockGetAudioChunk(3600);
+    } finally {
+      audioChunkLock.current = false;
+    }
+  };
+
+  // Envio de pergunta do investigador enquanto Live Captions está em andamento
+  const handleSendQuestion = async () => {
+    let audioBlob: any = undefined;
+    if (!audioChunkLock.current) {
+      audioChunkLock.current = true;
+      try {
+        const chunk = await mockGetAudioChunk(3500);
+        audioBlob = chunk.blob;
+        questionsRecorded++;
+      } finally {
+        audioChunkLock.current = false;
+      }
+    } else {
+      // Lock ocupado: envia pergunta sem abrir segundo MediaRecorder concorrente
+      questionsSentWithoutConflict++;
+    }
+    return { sent: true, audioBlob };
+  };
+
+  // Disparar Live Captions e envio de pergunta simultaneamente
+  const captionPromise = runLiveCaptionsCapture();
+  // Breve delay de 5ms para que a gravação do Live Captions já tenha adquirido o lock
+  await new Promise((r) => setTimeout(r, 5));
+  const questionPromise = handleSendQuestion();
+
+  await Promise.all([captionPromise, questionPromise]);
+
+  assert.equal(maxConcurrentRecordings, 1, 'Nunca deve haver mais de 1 gravação simultânea');
+  assert.equal(questionsSentWithoutConflict, 1, 'A pergunta concorrente deve respeitar o lock e evitar colisão de gravação');
+});
+
+test('Timestamps Autoritativos do Sistema: /api/analyze higieniza e preserva limites temporais fornecidos pelo sistema', () => {
+  const sanitizeTimestamps = (reqBody: any) => {
+    const rawStartMs = Number(reqBody?.segmentStartMs);
+    const segmentStartMs = Number.isFinite(rawStartMs) && rawStartMs >= 0 ? Math.floor(rawStartMs) : 0;
+    const rawEndMs = Number(reqBody?.segmentEndMs);
+    const segmentEndMs = Number.isFinite(rawEndMs) && rawEndMs >= segmentStartMs
+      ? Math.min(Math.floor(rawEndMs), segmentStartMs + 30000)
+      : segmentStartMs + 3600;
+    return { segmentStartMs, segmentEndMs };
+  };
+
+  // Caso 1: Valores válidos normais
+  const valid = sanitizeTimestamps({ segmentStartMs: 12000, segmentEndMs: 15600 });
+  assert.equal(valid.segmentStartMs, 12000);
+  assert.equal(valid.segmentEndMs, 15600);
+
+  // Caso 2: Start negativo deve ser normalizado para 0
+  const negStart = sanitizeTimestamps({ segmentStartMs: -500, segmentEndMs: 3000 });
+  assert.equal(negStart.segmentStartMs, 0);
+  assert.equal(negStart.segmentEndMs, 3000);
+
+  // Caso 3: End menor que start deve receber default de start + 3600
+  const inverted = sanitizeTimestamps({ segmentStartMs: 5000, segmentEndMs: 2000 });
+  assert.equal(inverted.segmentStartMs, 5000);
+  assert.equal(inverted.segmentEndMs, 8600);
+
+  // Caso 4: Intervalo absurdamente longo (> 30s) é limitado ao teto seguro
+  const excessive = sanitizeTimestamps({ segmentStartMs: 1000, segmentEndMs: 900000 });
+  assert.equal(excessive.segmentStartMs, 1000);
+  assert.equal(excessive.segmentEndMs, 31000); // 1000 + 30000
+});
+

@@ -462,6 +462,14 @@ app.post('/api/analyze', authenticateFirebaseUser, async (req: any, res: Respons
 
   const { question, audioBase64, mimeType, sensorContext, audioMetrics, toolSessionId } = req.body || {};
 
+  // Validação autoritativa dos timestamps temporais enviados pelo sistema (frontend)
+  const rawStartMs = Number(req.body?.segmentStartMs);
+  const segmentStartMs = Number.isFinite(rawStartMs) && rawStartMs >= 0 ? Math.floor(rawStartMs) : 0;
+  const rawEndMs = Number(req.body?.segmentEndMs);
+  const segmentEndMs = Number.isFinite(rawEndMs) && rawEndMs >= segmentStartMs
+    ? Math.min(Math.floor(rawEndMs), segmentStartMs + 30000)
+    : segmentStartMs + 3600;
+
   // Validação de entrada
   if (!question || typeof question !== 'string' || question.trim().length === 0) {
     return res.status(400).json({ error: 'Pergunta da consulta é obrigatória.' });
@@ -564,8 +572,8 @@ app.post('/api/analyze', authenticateFirebaseUser, async (req: any, res: Respons
       conclusion,
       confidence,
       voiceDetected: hasAudioData && hasSignificantVolume && isVoiceBand,
-      segmentStartMs: req.body?.segmentStartMs || 0,
-      segmentEndMs: req.body?.segmentEndMs || 3600,
+      segmentStartMs,
+      segmentEndMs,
       alternativeTranscriptions: [],
       acousticNotes: hasAudioData
         ? `[Medição Real DSP] dBFS: ${dbfs.toFixed(1)} | Frequência de pico: ${peakHz}Hz | Banda de fala: ${isVoiceBand ? 'Sim' : 'Não'}`
@@ -625,8 +633,6 @@ FORMATO JSON OBRIGATÓRIO:
   "voiceDetected": boolean,
   "candidateTranscription": null ou string,
   "confidence": number,
-  "segmentStartMs": number,
-  "segmentEndMs": number,
   "alternativeTranscriptions": [
     {"text": string, "confidence": number}
   ],
@@ -700,8 +706,8 @@ FORMATO JSON OBRIGATÓRIO:
 
     const finalResponse = {
       ...parsed,
-      segmentStartMs: parsed.segmentStartMs || req.body?.segmentStartMs || 0,
-      segmentEndMs: parsed.segmentEndMs || req.body?.segmentEndMs || 3600,
+      segmentStartMs,
+      segmentEndMs,
       provider: `${cascadeResult.modelUsed} (Análise Forense)`,
       modelUsed: cascadeResult.modelUsed,
       executionTimeMs: cascadeResult.executionTimeMs,
@@ -740,8 +746,8 @@ FORMATO JSON OBRIGATÓRIO:
       voiceDetected: hasAudioData && hasSignificantVolume && isVoiceBand,
       confidence: hasAudioData && hasSignificantVolume && isVoiceBand ? 0.35 : 0.05,
       conclusion: localConclusion,
-      segmentStartMs: req.body?.segmentStartMs || 0,
-      segmentEndMs: req.body?.segmentEndMs || 3600,
+      segmentStartMs,
+      segmentEndMs,
       alternativeTranscriptions: [],
       acousticNotes: hasAudioData
         ? `[Medição Real DSP] Volume dBFS: ${dbfs.toFixed(1)} | Pico: ${peakHz}Hz | Banda de fala: ${isVoiceBand ? 'Sim' : 'Não'}`
